@@ -80,6 +80,8 @@ class RunningTask:
     """任务来源，例如 ``skill:clock``、``task:备份``、``agent``、``tts``。"""
     timeout: float | None
     cancellable: bool
+    parent_id: str | None = None
+    """创建本任务的托管任务 id（例如技能任务的父任务是「对话」任务）。"""
     token: CancelToken = field(default_factory=CancelToken)
     started_at: float = field(default_factory=time.time)
     status: TaskStatus = TaskStatus.RUNNING
@@ -168,6 +170,7 @@ class TaskManager:
             source=source,
             timeout=timeout,
             cancellable=cancellable,
+            parent_id=(parent.id if (parent := self.current()) else None),
         )
         rt._task = asyncio.get_running_loop().create_task(
             self._run(rt, target, on_cancel), name=f"{rt.id}:{name}"
@@ -269,10 +272,18 @@ class TaskManager:
 
     # ------------------------------------------------------------------ 查询
 
-    def list(self, kind: TaskKind | None = None) -> list[RunningTask]:
-        """列出正在运行的任务（按启动时间排序）。"""
+    def list(
+        self, kind: TaskKind | None = None, *, exclude_caller: bool = False
+    ) -> list[RunningTask]:
+        """列出正在运行的任务（按启动时间排序）。
+
+        Args:
+            kind: 只列出指定类型。
+            exclude_caller: 排除调用方所在任务及其祖先（例如“现在在做什么”时不列出「对话」本身）。
+        """
+        skip = self._exclude_ids(None) if exclude_caller else set()
         tasks = sorted(self._tasks.values(), key=lambda t: t.started_at)
-        return [t for t in tasks if kind is None or t.kind == kind]
+        return [t for t in tasks if (kind is None or t.kind == kind) and t.id not in skip]
 
     def get(self, task_id: str) -> RunningTask | None:
         """按 id 获取正在运行的任务。"""
@@ -306,15 +317,16 @@ class TaskManager:
         return rt.cancel(reason) if rt else False
 
     def cancel_by_name(self, query: str, reason: str = "user") -> list[RunningTask]:
-        """按名称模糊匹配并取消，返回被取消的任务列表。"""
-        return [t for t in self.find(query) if t.cancel(reason)]
+        """按名称模糊匹配并取消（调用方及其祖先除外），返回被取消的任务列表。"""
+        skip = self._exclude_ids(None)
+        return [t for t in self.find(query) if t.id not in skip and t.cancel(reason)]
 
     def cancel_foreground(
         self, reason: str = "barge_in", *, exclude: set[str] | None = None
     ) -> int:
         """取消所有前台任务（打断 / “停止”时使用），后台任务不受影响。
 
-        调用方自身所在的托管任务不会被取消（例如“停止”指令是在“对话”任务里处理的，
+        调用方自身所在的托管任务及其祖先不会被取消（例如“停止”指令是在“对话”任务里处理的，
         不能把自己也取消掉，否则后面的“好的”就播不出来了）。
 
         Args:
@@ -341,9 +353,16 @@ class TaskManager:
         return next((t for t in self._tasks.values() if t._task is task), None)
 
     def _exclude_ids(self, exclude: set[str] | None) -> set[str]:
+        """计算不应被取消的任务：额外指定的 + 调用方所在任务 + 它的所有祖先任务。
+
+        为什么要包含祖先？“停止所有任务”是在技能子任务里执行的，它的父任务「对话」
+        正在等待技能返回并播报“好的”。如果把父任务也取消了，回复就播不出来。
+        """
         skip = set(exclude or ())
-        if (me := self.current()) is not None:
-            skip.add(me.id)
+        node = self.current()
+        while node is not None and node.id not in skip:
+            skip.add(node.id)
+            node = self._tasks.get(node.parent_id) if node.parent_id else None
         return skip
 
     async def shutdown(self, timeout: float = 5.0) -> None:
