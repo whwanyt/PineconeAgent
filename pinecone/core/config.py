@@ -235,7 +235,7 @@ class AppConfig(BaseModel):
 # =============================================================================
 
 
-def _expand_env(value: Any) -> Any:
+def expand_env(value: Any) -> Any:
     """递归展开配置中的环境变量引用。
 
     只处理字符串；dict / list 会递归处理。未设置且没有默认值的变量会被替换成空字符串，
@@ -244,9 +244,9 @@ def _expand_env(value: Any) -> Any:
     if isinstance(value, str):
         return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
     if isinstance(value, dict):
-        return {k: _expand_env(v) for k, v in value.items()}
+        return {k: expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_expand_env(v) for v in value]
+        return [expand_env(v) for v in value]
     return value
 
 
@@ -303,4 +303,4 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if local_path.exists():
         raw = deep_merge(raw, _read_yaml(local_path))
 
-    return AppConfig.model_validate(_expand_env(raw))
+    return AppConfig.model_validate(expand_env(raw))
