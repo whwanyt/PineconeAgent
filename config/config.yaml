@@ -206,3 +206,15 @@ agent:
   history_days: 7
   # 长期记忆：AI 可以记住你的称呼、喜好、作息等，跨会话保留（data/agent_memory.db）。默认：true
   long_term_memory: true
+  # MCP 服务：接入天气、搜索、Home Assistant 等外部工具，启动时自动加载。默认：{}
+  # 服务名只能用英文、数字、下划线，会作为工具名前缀；某个服务连不上不影响其他功能。示例：
+  #   mcp_servers:
+  #     weather:
+  #       transport: stdio                  # 本地进程
+  #       command: uvx
+  #       args: [mcp-weather-server]
+  #     homeassistant:
+  #       transport: streamable_http        # 远程 HTTP 服务
+  #       url: http://homeassistant.local:8123/mcp_server/sse
+  #       headers: {Authorization: "Bearer ${HA_TOKEN}"}
+  mcp_servers: {}

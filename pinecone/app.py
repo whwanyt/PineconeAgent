@@ -29,6 +29,7 @@ from langgraph.store.sqlite.aio import AsyncSqliteStore
 from pinecone.agent import VoiceAgent, create_chat_model
 from pinecone.agent.memory.long_term import LongTermMemory
 from pinecone.agent.memory.short_term import create_summarization, prune_history
+from pinecone.agent.tools.mcp_tools import load_mcp_tools
 from pinecone.agent.tools.skill_tools import skill_tools
 from pinecone.audio.aec import create_echo_canceller
 from pinecone.audio.input import AudioInput
@@ -155,7 +156,7 @@ class App:
         agent = VoiceAgent(
             self.config,
             model,
-            tools=skill_tools(self.skills),
+            tools=[*skill_tools(self.skills), *await load_mcp_tools(cfg.mcp_servers)],
             checkpointer=checkpointer,
             memory=memory,
             middleware=[summarization],

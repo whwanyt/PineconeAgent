@@ -223,6 +223,8 @@ class AgentConfig(BaseModel):
     """会话历史保留天数，启动时清理更早的会话；0 表示不清理。"""
     long_term_memory: bool = True
     """是否启用长期记忆（remember / recall / forget 工具 + 每轮注入相关记忆）。"""
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """MCP 服务：服务名 → 连接配置（transport: stdio / streamable_http / sse / websocket）。"""
 
 
 class AppConfig(BaseModel):
