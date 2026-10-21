@@ -23,3 +23,17 @@ log:
   max_bytes: 5242880
   # 保留的历史日志文件个数。默认：3
   backup_count: 3
+
+# ---- 音频 ----
+# 执行 `python -m pinecone.audio.devices` 可以列出所有设备及序号
+audio:
+  # 麦克风：null=系统默认；整数=设备序号；字符串=设备名关键字（不区分大小写，如 "USB"）。默认：null
+  input_device: null
+  # 扬声器：规则同上。树莓派 5 没有 3.5mm 口，可填 "USB" / "HDMI" / 蓝牙音箱名。默认：null
+  output_device: null
+  # 送给语音模型的采样率，模型要求 16000，一般不要改。默认：16000
+  sample_rate: 16000
+  # 每帧时长（毫秒），可选 10/20/30。默认：20
+  frame_ms: 20
+  # 语音播报音量 0~1。默认：0.8
+  volume: 0.8

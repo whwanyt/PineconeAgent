@@ -50,6 +50,21 @@ class LogConfig(BaseModel):
     """保留的历史日志文件个数。"""
 
 
+class AudioConfig(BaseModel):
+    """音频输入输出配置。"""
+
+    input_device: str | int | None = None
+    """麦克风：None 表示系统默认；整数为设备序号；字符串为设备名关键字（模糊匹配）。"""
+    output_device: str | int | None = None
+    """扬声器：取值规则同 input_device。"""
+    sample_rate: int = 16000
+    """送给语音模型的采样率。唤醒词 / VAD / 识别模型都要求 16kHz，一般不要修改。"""
+    frame_ms: int = 20
+    """每帧时长（毫秒）。越小延迟越低、CPU 开销越大；10/20/30 均可。"""
+    volume: float = Field(0.8, ge=0.0, le=1.0)
+    """语音播报音量（0~1）。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -58,6 +73,7 @@ class AppConfig(BaseModel):
     data_dir: str = "data"
     """运行时数据目录（SQLite 数据库等），相对项目根目录。"""
     log: LogConfig = Field(default_factory=LogConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。
