@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -50,6 +50,26 @@ class LogConfig(BaseModel):
     """保留的历史日志文件个数。"""
 
 
+class AecConfig(BaseModel):
+    """回声消除（AEC）配置。"""
+
+    mode: Literal["none", "software", "pipewire", "hardware"] = "software"
+    """回声消除模式：
+    - none：不做回声消除，只能用唤醒词打断（播报期间会提高唤醒阈值）；
+    - software：进程内软件回声消除（WebRTC APM / speexdsp），无需额外硬件；
+    - pipewire：系统级 module-echo-cancel，需把输入/输出设备设为 Echo-Cancel 虚拟设备；
+    - hardware：麦克风阵列自带 AEC（如 ReSpeaker USB Mic Array v2.0），程序不做处理。
+    """
+    backend: Literal["auto", "webrtc", "speex"] = "auto"
+    """software 模式的算法后端：auto 优先 webrtc（pip 包 livekit），不可用时用 speex。"""
+    stream_delay_ms: int = 60
+    """扬声器播放到麦克风采集之间的大致延迟（毫秒），作为 WebRTC AEC 的初始估计。"""
+    filter_ms: int = 200
+    """speex 自适应滤波器长度（毫秒），需覆盖回声路径的延迟与混响尾巴。"""
+    noise_suppression: bool = True
+    """webrtc 后端是否同时开启降噪。"""
+
+
 class AudioConfig(BaseModel):
     """音频输入输出配置。"""
 
@@ -63,6 +83,7 @@ class AudioConfig(BaseModel):
     """每帧时长（毫秒）。越小延迟越低、CPU 开销越大；10/20/30 均可。"""
     volume: float = Field(0.8, ge=0.0, le=1.0)
     """语音播报音量（0~1）。"""
+    aec: AecConfig = Field(default_factory=AecConfig)
 
 
 class AppConfig(BaseModel):

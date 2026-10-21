@@ -37,3 +37,24 @@ audio:
   frame_ms: 20
   # 语音播报音量 0~1。默认：0.8
   volume: 0.8
+
+  # ---- 回声消除（AEC）----
+  # 作用：播报时扣除扬声器自己的声音，避免误唤醒，并让“直接开口打断”成为可能。
+  aec:
+    # 模式。默认：software
+    #   none     不处理；只能用唤醒词打断（播报期间自动提高唤醒阈值）。零成本、最简单。
+    #   software 进程内软件 AEC（WebRTC / speex），无需额外硬件。初期推荐。
+    #            需要安装：uv pip install 'pinecone-agent[aec]'
+    #            注意：音乐由 mpv 独立播放，其回声无法在此模式下消除（唤醒后会自动压低音乐音量）。
+    #   pipewire 系统级 module-echo-cancel，可以连音乐回声一起消除；
+    #            需运行 scripts/install_pi.sh 并把下面设备设为 "Echo-Cancel Source" / "Echo-Cancel Sink"。
+    #   hardware 麦克风阵列自带 AEC（如 ReSpeaker USB Mic Array v2.0），程序内不处理。
+    mode: software
+    # software 模式的算法：auto（优先 webrtc，失败用 speex）/ webrtc / speex。默认：auto
+    backend: auto
+    # 扬声器到麦克风的大致延迟（毫秒），WebRTC 的初始估计值，会自动校正。默认：60
+    stream_delay_ms: 60
+    # speex 滤波器长度（毫秒），需覆盖回声延迟和混响。默认：200
+    filter_ms: 200
+    # webrtc 后端是否同时降噪。默认：true
+    noise_suppression: true
