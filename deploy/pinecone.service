@@ -1,0 +1,45 @@
+# =============================================================================
+# PineconeAgent systemd 用户服务
+# -----------------------------------------------------------------------------
+# 为什么是“用户服务”（systemctl --user）而不是系统服务？
+#   树莓派 OS Bookworm 的声音由 PipeWire 管理，PipeWire 运行在用户会话中。
+#   以用户服务运行才能直接使用 PipeWire 的设备（包括 Echo-Cancel 虚拟设备），
+#   系统服务则需要额外处理音频权限和 XDG_RUNTIME_DIR。
+#
+# 安装（scripts/install_pi.sh 会自动完成）：
+#   cp deploy/pinecone.service ~/.config/systemd/user/   （并替换 __PROJECT_DIR__）
+#   loginctl enable-linger $USER      # 开机后无需登录也会启动用户服务
+#   systemctl --user enable --now pinecone
+#
+# 常用命令：
+#   systemctl --user status pinecone      查看状态
+#   journalctl --user -u pinecone -f      查看实时日志
+#   systemctl --user restart pinecone     修改配置后重启
+# =============================================================================
+
+[Unit]
+Description=PineconeAgent 树莓派智能音箱
+# 等待 PipeWire 就绪，否则启动时可能找不到音频设备
+After=pipewire.service pipewire-pulse.service wireplumber.service network-online.target
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+# 密钥等环境变量（OPENAI_API_KEY、HA_TOKEN……）放在项目根目录的 .env 中，文件不存在时忽略
+EnvironmentFile=-__PROJECT_DIR__/.env
+# 日志直接输出到 journald，不需要缓冲
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__PROJECT_DIR__/.venv/bin/python -m pinecone.main
+# 收到 SIGTERM 后程序会优雅退出（取消任务、关闭数据库），给它足够时间
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# 异常退出后 3 秒自动重启；短时间内反复崩溃则停止重启，避免刷屏
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=120
+StartLimitBurst=5
+# 注意：用户服务没有权限设置负的 Nice 值（会导致启动失败），音频线程的实时性由 PipeWire 保证
+
+[Install]
+WantedBy=default.target
