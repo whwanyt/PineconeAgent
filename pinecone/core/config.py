@@ -194,6 +194,29 @@ class SkillsConfig(BaseModel):
     """各技能的私有配置，键为技能名，例如 settings.music.library: ~/Music。"""
 
 
+class AgentConfig(BaseModel):
+    """AI Agent（LangChain / LangGraph）配置。"""
+
+    enabled: bool = True
+    """是否启用 AI。未配置 api_key 时自动停用，规则未命中时回复“我还不会这个”。"""
+    base_url: str = "https://api.deepseek.com/v1"
+    """OpenAI 兼容接口地址（DeepSeek、通义、Kimi、本地 Ollama 等）。"""
+    api_key: str = ""
+    """接口密钥，建议用 ${OPENAI_API_KEY} 从环境变量读取。"""
+    model: str = "deepseek-chat"
+    """模型名称。"""
+    temperature: float = 0.7
+    """采样温度。"""
+    timeout_s: float = 30.0
+    """单次模型请求超时（秒）。"""
+    max_retries: int = 1
+    """请求失败重试次数。语音场景等待太久体验很差，不宜过大。"""
+    persona: str = ""
+    """追加到系统提示词中的人设 / 额外要求。"""
+    session_idle_min: float = 10.0
+    """会话空闲超过这么多分钟后开启新会话（短期记忆从头开始，长期记忆保留）。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -209,6 +232,7 @@ class AppConfig(BaseModel):
     tts: TtsConfig = Field(default_factory=TtsConfig)
     dialog: DialogConfig = Field(default_factory=DialogConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。

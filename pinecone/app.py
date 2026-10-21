@@ -9,6 +9,7 @@
               ├─ EchoCanceller（连接 AudioInput 与 AudioOutput）
               └─ DialogController（订阅事件，驱动整个对话流程）
                     └─ IntentRouter ─▶ SkillManager（规则匹配技能）
+                                   └─▶ VoiceAgent（规则未命中时的 AI 兜底）
 
 两种运行模式：
     - 语音模式（默认）：麦克风 + 唤醒词 + 识别；
@@ -22,6 +23,7 @@ import asyncio
 import contextlib
 import logging
 
+from pinecone.agent import VoiceAgent, create_chat_model
 from pinecone.audio.aec import create_echo_canceller
 from pinecone.audio.input import AudioInput
 from pinecone.audio.output import AudioOutput
@@ -110,6 +112,19 @@ class App:
         ctx.extras["skills"] = self.skills
         return ctx
 
+    async def _build_agent(self) -> VoiceAgent | None:
+        """创建 AI Agent；未启用或没有配置密钥时返回 None（规则未命中时回复“我还不会”）。"""
+        cfg = self.config.agent
+        if not cfg.enabled:
+            logger.info("AI 对话已关闭（agent.enabled=false）")
+            return None
+        if not cfg.api_key:
+            logger.warning("没有配置 agent.api_key / OPENAI_API_KEY，AI 对话不可用")
+            return None
+        agent = VoiceAgent(self.config, create_chat_model(cfg))
+        logger.info("AI 对话已启用：%s @ %s", cfg.model, cfg.base_url)
+        return agent
+
     async def setup(self) -> None:
         """创建并启动各模块（不阻塞）。"""
         self.bus.bind_loop(asyncio.get_running_loop())
@@ -121,6 +136,7 @@ class App:
         self.skills = SkillManager(self.config, self.tasks, self._make_skill_context)
         await self.skills.load()
         self.router = IntentRouter(self.skills)
+        self.router.set_fallback(await self._build_agent())
         self.dialog.set_handler(self.router)
 
         self.dialog.start()
