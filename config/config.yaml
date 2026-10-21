@@ -217,4 +217,6 @@ agent:
   #       transport: streamable_http        # 远程 HTTP 服务
   #       url: http://homeassistant.local:8123/mcp_server/sse
   #       headers: {Authorization: "Bearer ${HA_TOKEN}"}
+  # transport 可选：stdio / streamable_http / sse / websocket；也兼容 Cursor、ModelScope 等平台
+  # 复制来的 type 写法（如 type: streamableHttp），两者都不写时按 command / url 自动推断。
   mcp_servers: {}

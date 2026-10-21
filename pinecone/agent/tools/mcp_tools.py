@@ -38,6 +38,57 @@ logger = logging.getLogger(__name__)
 
 _NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# Cursor / ModelScope / Claude Desktop 等平台导出的配置常用的传输方式写法 → 适配器认可的写法
+_TRANSPORT_ALIASES = {
+    "streamablehttp": "streamable_http",
+    "streamable-http": "streamable_http",
+    "streamable_http": "streamable_http",
+    "http": "streamable_http",
+    "sse": "sse",
+    "stdio": "stdio",
+    "websocket": "websocket",
+    "ws": "websocket",
+}
+
+
+def normalize_connection(conn: dict[str, Any]) -> dict[str, Any]:
+    """把各平台常见的 MCP 配置写法统一成 langchain-mcp-adapters 的格式。
+
+    适配器只认 ``transport`` 字段，而很多平台复制出来的配置写的是 ``type``，
+    甚至两者都不写。这里依次处理：
+    1. 没有 ``transport`` 时取 ``type``（并删除 ``type``，适配器不接受多余字段）；
+    2. 仍然没有时按字段推断：有 ``command`` → stdio，有 ``url`` → streamable_http；
+    3. 把 ``streamableHttp`` 等别名统一成适配器的取值。
+
+    Args:
+        conn: 单个服务的原始连接配置。
+
+    Returns:
+        新的配置字典（不修改入参）；无法识别的取值原样保留，交给适配器报错。
+    """
+    result = dict(conn)
+    transport = result.pop("type", None)
+    transport = result.get("transport") or transport
+    if not transport:
+        if "command" in result:
+            transport = "stdio"
+        elif "url" in result:
+            transport = "streamable_http"
+    if transport:
+        result["transport"] = _TRANSPORT_ALIASES.get(str(transport).lower(), transport)
+    return result
+
+
+def _root_cause(exc: BaseException) -> str:
+    """取出异常组里的第一个底层异常，生成可读的错误描述。
+
+    MCP 客户端基于 anyio TaskGroup，网络错误会被包成
+    “unhandled errors in a TaskGroup”，直接打印看不出原因（如 401、410、连接被拒）。
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return f"{type(exc).__name__}: {exc}"
+
 
 async def load_mcp_tools(
     servers: dict[str, dict[str, Any]], timeout_s: float = 20.0
@@ -56,7 +107,7 @@ async def load_mcp_tools(
         if not _NAME.match(name):
             logger.error("MCP 服务名 %r 不合法（只能用英文、数字、下划线、横线），已跳过", name)
             continue
-        valid[name] = dict(conn)
+        valid[name] = normalize_connection(conn)
     if not valid:
         return []
 
@@ -67,7 +118,7 @@ async def load_mcp_tools(
             async with asyncio.timeout(timeout_s):
                 loaded = await client.get_tools(server_name=name)
         except Exception as exc:
-            logger.warning("MCP 服务 %s 加载失败，已跳过：%s", name, exc)
+            logger.warning("MCP 服务 %s 加载失败，已跳过：%s", name, _root_cause(exc))
             continue
         logger.info("MCP 服务 %s：%s", name, "、".join(t.name for t in loaded) or "无工具")
         tools.extend(loaded)
