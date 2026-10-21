@@ -1,0 +1,155 @@
+"""配置加载与校验。
+
+职责：
+    1. 读取 ``config/config.yaml``（主配置，入库）；
+    2. 如果存在 ``config/config.local.yaml``（本地覆盖，git 忽略），深度合并覆盖主配置，
+       用来放 API Key、设备名这类因机器而异的配置；
+    3. 展开 ``${ENV_NAME}`` / ``${ENV_NAME:默认值}`` 形式的环境变量引用；
+    4. 用 pydantic 校验并转换成强类型的 :class:`AppConfig`。
+
+其他模块只接收各自那一段子配置（例如 ``AudioConfig``），不直接读文件，
+这样单元测试时可以直接构造配置对象。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+# 项目根目录：pinecone/core/config.py 往上三级
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+LOCAL_CONFIG_NAME = "config.local.yaml"
+
+# 匹配 ${NAME} 或 ${NAME:default}
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
+
+
+# =============================================================================
+# 各模块的子配置
+# -----------------------------------------------------------------------------
+# 每个模块一个 BaseModel，全部字段都有默认值，因此 config.yaml 可以只写需要修改的部分。
+# =============================================================================
+
+
+class LogConfig(BaseModel):
+    """日志配置。"""
+
+    level: str = "INFO"
+    """日志级别：DEBUG / INFO / WARNING / ERROR。"""
+    file: str | None = "logs/pinecone.log"
+    """日志文件路径（相对项目根目录）；设为 null 只输出到控制台。"""
+    max_bytes: int = 5 * 1024 * 1024
+    """单个日志文件的最大字节数，超过后滚动。"""
+    backup_count: int = 3
+    """保留的历史日志文件个数。"""
+
+
+class AppConfig(BaseModel):
+    """整个应用的配置根对象。"""
+
+    name: str = "小派"
+    """音箱的名字，用于自我介绍和 AI 人设。"""
+    data_dir: str = "data"
+    """运行时数据目录（SQLite 数据库等），相对项目根目录。"""
+    log: LogConfig = Field(default_factory=LogConfig)
+
+    def resolve_path(self, path: str | Path) -> Path:
+        """把配置中的相对路径解析为基于项目根目录的绝对路径。
+
+        Args:
+            path: 配置中填写的路径，可以是绝对路径或相对项目根目录的路径。
+
+        Returns:
+            绝对路径。
+        """
+        p = Path(path).expanduser()
+        return p if p.is_absolute() else PROJECT_ROOT / p
+
+    @property
+    def data_path(self) -> Path:
+        """数据目录的绝对路径（自动创建）。"""
+        p = self.resolve_path(self.data_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+
+# =============================================================================
+# 加载逻辑
+# =============================================================================
+
+
+def _expand_env(value: Any) -> Any:
+    """递归展开配置中的环境变量引用。
+
+    只处理字符串；dict / list 会递归处理。未设置且没有默认值的变量会被替换成空字符串，
+    这样缺少 API Key 时程序依然能启动（只是 AI 功能不可用），而不是直接崩溃。
+    """
+    if isinstance(value, str):
+        return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
+    if isinstance(value, dict):
+        return {k: _expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(v) for v in value]
+    return value
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """深度合并两个字典，``override`` 中的值优先。
+
+    嵌套字典会逐层合并；列表和标量直接整体覆盖（合并列表往往不是用户想要的语义）。
+
+    Args:
+        base: 基础配置。
+        override: 覆盖配置。
+
+    Returns:
+        合并后的新字典，不修改入参。
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    """读取 YAML 文件，空文件返回空字典。"""
+    with path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件顶层必须是映射（字典）：{path}")
+    return data
+
+
+def load_config(path: str | Path | None = None) -> AppConfig:
+    """加载并校验配置。
+
+    查找顺序：参数 ``path`` > 环境变量 ``PINECONE_CONFIG`` > ``config/config.yaml``。
+    同目录下的 ``config.local.yaml`` 会被深度合并到主配置之上。
+
+    Args:
+        path: 主配置文件路径，可选。
+
+    Returns:
+        校验后的 :class:`AppConfig`。
+
+    Raises:
+        pydantic.ValidationError: 配置字段类型或取值不合法。
+        ValueError: YAML 顶层不是字典。
+    """
+    cfg_path = Path(path or os.environ.get("PINECONE_CONFIG") or DEFAULT_CONFIG_PATH)
+    raw: dict[str, Any] = _read_yaml(cfg_path) if cfg_path.exists() else {}
+
+    local_path = cfg_path.parent / LOCAL_CONFIG_NAME
+    if local_path.exists():
+        raw = deep_merge(raw, _read_yaml(local_path))
+
+    return AppConfig.model_validate(_expand_env(raw))
