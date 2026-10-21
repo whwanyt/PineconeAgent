@@ -215,6 +215,12 @@ class AgentConfig(BaseModel):
     """追加到系统提示词中的人设 / 额外要求。"""
     session_idle_min: float = 10.0
     """会话空闲超过这么多分钟后开启新会话（短期记忆从头开始，长期记忆保留）。"""
+    summarize_after_tokens: int = 2000
+    """会话历史超过多少 token 时把较早的内容压缩成摘要。"""
+    keep_messages: int = 10
+    """压缩时保留最近多少条原始消息。"""
+    history_days: float = 7.0
+    """会话历史保留天数，启动时清理更早的会话；0 表示不清理。"""
 
 
 class AppConfig(BaseModel):

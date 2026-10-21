@@ -23,7 +23,10 @@ import asyncio
 import contextlib
 import logging
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
 from pinecone.agent import VoiceAgent, create_chat_model
+from pinecone.agent.memory.short_term import create_summarization, prune_history
 from pinecone.audio.aec import create_echo_canceller
 from pinecone.audio.input import AudioInput
 from pinecone.audio.output import AudioOutput
@@ -53,6 +56,8 @@ class App:
         self.mic: AudioInput | None = None
         self.dialog: DialogController
         self._stop = asyncio.Event()
+        # 需要在退出时关闭的异步资源（数据库连接、MCP 会话等）
+        self._resources = contextlib.AsyncExitStack()
 
     def _build_voice_frontend(self) -> DialogController:
         """创建麦克风、回声消除、唤醒词、VAD、识别，并组装对话控制器。"""
@@ -121,7 +126,23 @@ class App:
         if not cfg.api_key:
             logger.warning("没有配置 agent.api_key / OPENAI_API_KEY，AI 对话不可用")
             return None
-        agent = VoiceAgent(self.config, create_chat_model(cfg))
+        model = create_chat_model(cfg)
+
+        # 短期记忆：SQLite 检查点，连接在整个运行期间保持打开，退出时由 _resources 关闭
+        history_db = self.config.data_path / "agent_history.db"
+        prune_history(history_db, cfg.history_days)
+        checkpointer = await self._resources.enter_async_context(
+            AsyncSqliteSaver.from_conn_string(str(history_db))
+        )
+        summarization = create_summarization(
+            model,
+            summarize_after_tokens=cfg.summarize_after_tokens,
+            keep_messages=cfg.keep_messages,
+        )
+
+        agent = VoiceAgent(
+            self.config, model, checkpointer=checkpointer, middleware=[summarization]
+        )
         logger.info("AI 对话已启用：%s @ %s", cfg.model, cfg.base_url)
         return agent
 
@@ -172,6 +193,7 @@ class App:
             self.mic.stop()
         await self.tasks.shutdown()
         await self.skills.unload()
+        await self._resources.aclose()
         self.output.stop()
 
     async def _text_loop(self) -> None:
