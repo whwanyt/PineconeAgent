@@ -135,6 +135,29 @@ class AsrConfig(BaseModel):
     """推理线程数。树莓派 5 有 4 核，2 线程时 5 秒语音约 0.3 秒识别完。"""
 
 
+class TtsConfig(BaseModel):
+    """语音合成配置。"""
+
+    engine: Literal["edge", "local"] = "edge"
+    """主引擎：edge（微软在线语音，免费、音色自然，需联网）/ local（本地 Matcha，离线）。"""
+    fallback: Literal["local", "none"] = "local"
+    """主引擎失败（如断网）时的降级引擎。"""
+    edge_voice: str = "zh-CN-XiaoxiaoNeural"
+    """edge 音色。可选如 zh-CN-XiaoyiNeural、zh-CN-YunxiNeural，`edge-tts --list-voices` 查看全部。"""
+    edge_rate: str = "+0%"
+    """edge 语速，例如 "+10%" 更快、"-10%" 更慢。"""
+    edge_timeout_s: float = 4.0
+    """edge 合成超时（秒），超时后改用降级引擎，避免断网时长时间无响应。"""
+    local_model_dir: str = "models/tts"
+    """本地模型目录（scripts/download_models.sh tts 下载）。"""
+    local_speed: float = 1.0
+    """本地合成语速，>1 更快。"""
+    num_threads: int = 2
+    """本地合成推理线程数。"""
+    cache_size: int = 64
+    """缓存最近合成过的短句（如“好的”“已为你设置闹钟”），重复播报时零延迟。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -147,6 +170,7 @@ class AppConfig(BaseModel):
     wake: WakeConfig = Field(default_factory=WakeConfig)
     vad: VadConfig = Field(default_factory=VadConfig)
     asr: AsrConfig = Field(default_factory=AsrConfig)
+    tts: TtsConfig = Field(default_factory=TtsConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。

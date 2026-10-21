@@ -102,3 +102,24 @@ asr:
   use_itn: true
   # 推理线程数。默认：2
   num_threads: 2
+
+# ---- 语音合成 ----
+tts:
+  # 主引擎：edge（微软在线，免费、自然，需联网）/ local（本地 Matcha，离线）。默认：edge
+  engine: edge
+  # 主引擎失败（如断网）时的降级：local / none。默认：local
+  fallback: local
+  # edge 音色，`edge-tts --list-voices | grep zh-CN` 查看。默认：zh-CN-XiaoxiaoNeural
+  edge_voice: zh-CN-XiaoxiaoNeural
+  # edge 语速，如 "+10%" / "-10%"。默认："+0%"
+  edge_rate: "+0%"
+  # edge 合成超时（秒），超时改用降级引擎。默认：4
+  edge_timeout_s: 4
+  # 本地模型目录，bash scripts/download_models.sh tts 下载。默认：models/tts
+  local_model_dir: models/tts
+  # 本地合成语速，>1 更快。默认：1.0
+  local_speed: 1.0
+  # 本地合成线程数。默认：2
+  num_threads: 2
+  # 短句合成结果缓存条数（“好的”这类高频回复零延迟）。默认：64
+  cache_size: 64
