@@ -24,8 +24,10 @@ import contextlib
 import logging
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.store.sqlite.aio import AsyncSqliteStore
 
 from pinecone.agent import VoiceAgent, create_chat_model
+from pinecone.agent.memory.long_term import LongTermMemory
 from pinecone.agent.memory.short_term import create_summarization, prune_history
 from pinecone.audio.aec import create_echo_canceller
 from pinecone.audio.input import AudioInput
@@ -140,8 +142,21 @@ class App:
             keep_messages=cfg.keep_messages,
         )
 
+        # 长期记忆：用户偏好与事实，跨会话保留
+        memory = None
+        if cfg.long_term_memory:
+            store = await self._resources.enter_async_context(
+                AsyncSqliteStore.from_conn_string(str(self.config.data_path / "agent_memory.db"))
+            )
+            await store.setup()
+            memory = LongTermMemory(store)
+
         agent = VoiceAgent(
-            self.config, model, checkpointer=checkpointer, middleware=[summarization]
+            self.config,
+            model,
+            checkpointer=checkpointer,
+            memory=memory,
+            middleware=[summarization],
         )
         logger.info("AI 对话已启用：%s @ %s", cfg.model, cfg.base_url)
         return agent

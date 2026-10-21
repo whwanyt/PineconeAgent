@@ -221,6 +221,8 @@ class AgentConfig(BaseModel):
     """压缩时保留最近多少条原始消息。"""
     history_days: float = 7.0
     """会话历史保留天数，启动时清理更早的会话；0 表示不清理。"""
+    long_term_memory: bool = True
+    """是否启用长期记忆（remember / recall / forget 工具 + 每轮注入相关记忆）。"""
 
 
 class AppConfig(BaseModel):

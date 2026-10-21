@@ -204,3 +204,5 @@ agent:
   keep_messages: 10
   # 会话历史保存天数，启动时清理更早的会话；0 表示永久保存。默认：7
   history_days: 7
+  # 长期记忆：AI 可以记住你的称呼、喜好、作息等，跨会话保留（data/agent_memory.db）。默认：true
+  long_term_memory: true

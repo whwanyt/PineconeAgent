@@ -39,11 +39,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.base import BaseStore
 
 from pinecone.core.config import AppConfig
 from pinecone.dialog import Reply
 
+from .memory.long_term import LongTermMemory
 from .prompts import build_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -103,13 +103,14 @@ class VoiceAgent:
         *,
         tools: Sequence[BaseTool] = (),
         checkpointer: BaseCheckpointSaver | None = None,
-        store: BaseStore | None = None,
+        memory: LongTermMemory | None = None,
         middleware: Sequence[AgentMiddleware] = (),
     ) -> None:
         self._config = config
         self.session = Session(config.agent.session_idle_min)
-        self._store = store
+        self._memory = memory
         name, persona = config.name, config.agent.persona
+        all_tools = [*tools, *(memory.tools() if memory else [])]
 
         @dynamic_prompt
         def system_prompt(request: ModelRequest) -> str:
@@ -120,12 +121,12 @@ class VoiceAgent:
 
         self._graph = create_agent(
             model,
-            tools=list(tools),
+            tools=all_tools,
             middleware=[system_prompt, *middleware],
             context_schema=AgentContext,
             checkpointer=checkpointer or InMemorySaver(),
-            store=store,
         )
+        logger.info("AI 工具：%s", "、".join(t.name for t in all_tools) or "无")
 
     async def handle(self, text: str) -> Reply:
         """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。"""
@@ -159,7 +160,7 @@ class VoiceAgent:
 
     async def _load_memories(self, text: str) -> list[str]:
         """检索与本轮相关的长期记忆（未启用长期记忆时为空）。"""
-        return []
+        return await self._memory.for_prompt(text) if self._memory else []
 
     async def _repair_history(self, config: dict[str, Any]) -> None:
         """给被打断的工具调用补上结果，保证会话历史合法。"""
