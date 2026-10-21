@@ -158,6 +158,9 @@ skills:
       ring_seconds: 60
       # “再睡一会儿”没说分钟数时的贪睡时长（分钟）。默认：5
       snooze_minutes: 5
+    custom_task:
+      # 自定义任务目录（相对项目根目录），每个 YAML 文件一个任务，见 tasks/README.md。默认：[tasks]
+      dirs: [tasks]
     music:
       # 音乐目录列表，按“歌手/歌名.mp3”或“歌手 - 歌名.mp3”组织便于点歌。默认：[~/Music]
       library: [~/Music]

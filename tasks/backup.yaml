@@ -1,0 +1,35 @@
+# 示例：备份照片到 U 盘（后台长任务，可以说“取消备份”终止）
+#
+# 使用前：把 BACKUP_SRC / BACKUP_DST 改成你的目录，或在环境变量中设置。
+
+name: 备份照片
+description: 把照片目录同步备份到移动硬盘
+keywords: ["备份照片", "开始备份"]
+
+# 后台执行：触发后立即回复，不阻塞对话；唤醒打断和“停止”不会影响它，
+# 只有“取消备份照片”“停止所有任务”才会终止。
+background: true
+
+# 最长运行 2 小时
+timeout: 7200
+
+# 后台任务启动时的即时回复。默认：“好的，开始<任务名>”
+reply: "好的，开始备份照片，完成后告诉你"
+
+# 后台任务完成后的主动播报，{{output}} 为最后一个动作的输出
+done_reply: "照片备份完成"
+
+actions:
+  # shell 动作：取消时会对整个进程组发 SIGTERM，3 秒后仍未退出则 SIGKILL，
+  # 所以 rsync 及其子进程都会被干净地终止
+  - type: shell
+    command: 'rsync -a --partial "${BACKUP_SRC:$HOME/Pictures}/" "${BACKUP_DST:/media/usb/backup/pictures}/"'
+    grace_s: 3
+
+on_error:
+  - type: speak
+    text: "备份失败了，请检查移动硬盘是否插好"
+
+on_cancel:
+  - type: speak
+    text: "已停止备份照片"

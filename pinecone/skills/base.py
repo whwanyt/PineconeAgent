@@ -80,6 +80,9 @@ class ToolSpec:
     """对应的技能意图名。"""
     args_schema: type[BaseModel] | None = None
     """参数模型（pydantic），字段的 description 会提供给 AI。无参数时为 None。"""
+    fixed_slots: dict[str, Any] = field(default_factory=dict)
+    """固定槽位，与 AI 参数合并后传给 handle。用于一个意图对应多个工具的场景，
+    例如每个自定义任务一个工具，都走 ``run`` 意图，靠 ``{"task": 任务名}`` 区分。"""
 
 
 class Skill(ABC):

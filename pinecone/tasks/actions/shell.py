@@ -60,6 +60,8 @@ class ShellAction(Action):
             command,
             cwd=cwd,
             env=env,
+            # 不继承主进程的标准输入：文本模式下主进程正在读 stdin，命令若也去读会互相抢输入、卡住
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,  # 独立进程组，取消时整组终止

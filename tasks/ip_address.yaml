@@ -1,0 +1,19 @@
+# 示例：播报音箱的 IP 地址（树莓派没有屏幕时很实用，方便 SSH 登录）
+
+name: 查询IP地址
+description: 播报音箱当前的局域网 IP 地址
+keywords: ["你的ip", "ip地址是多少", "查一下ip"]
+# 超时包含播报时间（断网时降级到本地合成会慢一些），不要设得太短
+timeout: 15
+
+actions:
+  # 输出会作为 {{output}} 传给下一个动作；awk 中的单花括号不会被当成变量。
+  # hostname -I 是 Linux（树莓派）的写法，失败时退回 macOS 的 ipconfig，方便在电脑上调试
+  - type: shell
+    command: "(hostname -I 2>/dev/null || ipconfig getifaddr en0) | awk '{print $1}' | grep ."
+  - type: speak
+    text: "我的IP地址是 {{output}}"
+
+on_error:
+  - type: speak
+    text: "暂时查不到IP地址"

@@ -1,0 +1,52 @@
+# 示例：通过 Home Assistant 开灯（前台任务）
+#
+# 使用前：在环境变量（或 .env）中设置 HA_URL 和 HA_TOKEN（Home Assistant 长期访问令牌），
+# 并把 entity_id 改成你自己的灯。不需要时可以把文件名改成 _open_light.yaml 来禁用。
+
+# 任务名（必填）：用于“取消开灯”“现在在做什么”的播报
+name: 开灯
+
+# 任务说明：提供给 AI，帮助它判断什么时候调用这个任务
+description: 打开家里的灯，可以指定房间（客厅、卧室）
+
+# 触发关键词：用户的话里包含其中任何一个就会触发（忽略标点和空格）
+keywords: ["开灯", "把灯打开"]
+
+# 正则触发（可选）：比关键词优先；命名分组会成为变量，在动作里用 {{room}} 引用
+patterns:
+  - "(打开|开一下)(?P<room>客厅|卧室)的?灯"
+
+# 是否后台执行：false 表示前台执行（说“停止”或唤醒打断会取消它）。默认：false
+background: false
+
+# 超时秒数，超时自动取消并执行 on_cancel。默认：30
+timeout: 15
+
+# 是否允许被语音 / AI 取消。默认：true
+cancellable: true
+
+# 是否作为工具提供给 AI（例如对 AI 说“屋里太暗了”它也可能调用这个任务）。默认：true
+expose_to_agent: true
+
+# 按顺序执行的动作（必填，至少一个）
+actions:
+  - type: http                 # 调用 Home Assistant 服务接口
+    method: POST
+    url: "${HA_URL:http://homeassistant.local:8123}/api/services/light/turn_on"
+    headers:
+      Authorization: "Bearer ${HA_TOKEN}"
+    json:
+      entity_id: "light.living_room"
+    timeout_s: 5
+  - type: speak                # {{room}} 为空时（关键词触发）只说“好的，灯已打开”
+    text: "好的，{{room}}灯已打开"
+
+# 执行失败（比如 Home Assistant 连不上）时执行的动作，{{error}} 为错误信息
+on_error:
+  - type: speak
+    text: "开灯失败了，请检查 Home Assistant 是否在线"
+
+# 被取消或超时后执行的清理动作，{{reason}} 为原因（超时 / 用户取消 / 被打断）
+on_cancel:
+  - type: speak
+    text: "开灯已取消，原因：{{reason}}"

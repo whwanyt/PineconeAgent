@@ -22,6 +22,21 @@ from pinecone.core.cancel import CancelToken
 _VAR = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
+def render(value: Any, variables: dict[str, Any]) -> Any:
+    """把 ``value`` 中的 ``{{变量}}`` 替换为变量值（递归处理 dict / list）。
+
+    用双花括号而不是 Python 的 ``{}``，是因为 shell 命令和 JSON 里经常出现单花括号。
+    未定义的变量替换为空字符串。
+    """
+    if isinstance(value, str):
+        return _VAR.sub(lambda m: str(variables.get(m.group(1), "")), value)
+    if isinstance(value, dict):
+        return {k: render(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [render(v, variables) for v in value]
+    return value
+
+
 class ActionError(RuntimeError):
     """动作执行失败（例如命令返回非 0、HTTP 状态码 >= 400）。"""
 
@@ -47,18 +62,8 @@ class ActionContext:
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("pinecone.tasks"))
 
     def render(self, value: Any) -> Any:
-        """把参数中的 ``{{变量}}`` 替换为变量值（递归处理 dict / list）。
-
-        用双花括号而不是 Python 的 ``{}``，是因为 shell 命令和 JSON 里经常出现单花括号。
-        未定义的变量替换为空字符串。
-        """
-        if isinstance(value, str):
-            return _VAR.sub(lambda m: str(self.variables.get(m.group(1), "")), value)
-        if isinstance(value, dict):
-            return {k: self.render(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self.render(v) for v in value]
-        return value
+        """用当前变量替换参数中的 ``{{变量}}``，见 :func:`render`。"""
+        return render(value, self.variables)
 
 
 class Action(ABC):

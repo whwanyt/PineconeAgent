@@ -21,10 +21,11 @@
 """
 
 from . import http, python, shell, sleep, speak  # noqa: F401 - 导入即注册
-from .base import Action, ActionContext, ActionError
+from .base import Action, ActionContext, ActionError, render
 from .registry import create_action, register_action, registered_actions
 
 __all__ = [
+    "render",
     "Action",
     "ActionContext",
     "ActionError",
