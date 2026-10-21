@@ -158,3 +158,14 @@ skills:
       ring_seconds: 60
       # “再睡一会儿”没说分钟数时的贪睡时长（分钟）。默认：5
       snooze_minutes: 5
+    music:
+      # 音乐目录列表，按“歌手/歌名.mp3”或“歌手 - 歌名.mp3”组织便于点歌。默认：[~/Music]
+      library: [~/Music]
+      # 网络电台：名称 → 流地址，说“播放<名称>”即可收听。默认：{}
+      stations: {}
+      # 音乐默认音量（0~100）。默认：60
+      volume: 60
+      # 唤醒 / 播报时音乐音量压低到的比例。默认：0.3
+      duck_ratio: 0.3
+      # mpv 输出设备，例如 "alsa/plughw:1,0"；null 为系统默认。默认：null
+      audio_device: null
