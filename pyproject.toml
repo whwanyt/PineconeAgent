@@ -1,0 +1,86 @@
+# =============================================================================
+# PineconeAgent 项目配置
+# -----------------------------------------------------------------------------
+# - 目标运行环境：树莓派 5（Raspberry Pi OS Bookworm 64-bit，自带 Python 3.11）
+# - 开发环境：macOS / Linux 均可，音频与语音模型库都是跨平台的
+# - 依赖管理推荐使用 uv：`uv sync --extra dev`
+# =============================================================================
+
+[project]
+name = "pinecone-agent"
+version = "0.1.0"
+description = "运行在树莓派 5 上的智能音箱：语音唤醒、闹钟、音乐、自定义任务与 AI 对话"
+readme = "README.md"
+# 树莓派 OS Bookworm 自带 3.11，因此最低版本定为 3.11
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # ---- 基础设施 ----
+    "pyyaml>=6.0",              # 读取 config.yaml 与 tasks/*.yaml
+    "pydantic>=2.7",            # 配置与任务定义的类型校验
+    "numpy>=1.26",              # 音频帧处理
+    # ---- 音频 ----
+    "sounddevice>=0.4.6",       # 跨平台麦克风采集 / 扬声器播放（基于 PortAudio）
+    "miniaudio>=1.59",          # 解码 edge-tts 返回的 mp3 数据
+    # ---- 语音（唤醒词 / VAD / 识别 / 本地合成）----
+    "sherpa-onnx>=1.10.30",
+    # ---- 云端 TTS ----
+    "edge-tts>=6.1.12",
+    # ---- 技能 ----
+    "apscheduler>=3.10,<4",     # 闹钟调度（3.x 稳定版）
+    "sqlalchemy>=2.0",          # APScheduler 的 SQLite 持久化存储依赖
+    "python-mpv>=1.0.6",        # 音乐播放（需要系统安装 libmpv）
+    "httpx>=0.27",              # 自定义任务的 http 动作
+    # ---- AI Agent ----
+    "langchain>=1.0",
+    "langchain-openai>=1.0",
+    "langgraph>=1.0",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-mcp-adapters>=0.1.9",
+    "aiosqlite>=0.20",
+]
+
+[project.optional-dependencies]
+# 软件回声消除（aec.mode = software）。livekit 提供 WebRTC APM；
+# 如果在某些平台装不上，可以改用 speexdsp（需要系统安装 libspeexdsp-dev）。
+aec = ["livekit>=1.0"]
+aec-speex = ["speexdsp>=0.1.1"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+# 安装后可直接执行 `pinecone` 启动音箱
+pinecone = "pinecone.main:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pinecone"]
+
+# -----------------------------------------------------------------------------
+# ruff：格式化 + 静态检查
+# -----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F：基础错误；I：import 排序；UP：新语法；B：常见 bug；ASYNC：异步陷阱
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]
+# RUF001/002/003 会对中文全角标点报警，中文注释项目中关闭
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pinecone"]
+
+# -----------------------------------------------------------------------------
+# pytest
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

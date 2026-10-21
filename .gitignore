@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# ---- 运行时数据 ----
+# 语音模型体积大（几百 MB），由 scripts/download_models.sh 下载，不入库
+models/*
+!models/.gitkeep
+# SQLite 数据库（闹钟、对话记忆）、日志
+data/
+logs/
+*.db
+*.sqlite3
+
+# ---- 本地配置 ----
+# 本地覆盖配置可能含 API Key，不入库
+config/config.local.yaml
+.env
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+.idea/
+.vscode/

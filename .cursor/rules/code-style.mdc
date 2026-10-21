@@ -1,0 +1,27 @@
+---
+description: PineconeAgent 代码与注释规范（中文详细注释）
+globs: ["**/*.py", "**/*.yaml", "**/*.sh"]
+alwaysApply: true
+---
+
+# PineconeAgent 代码规范
+
+## 注释（必须使用详细的中文注释）
+- **模块顶部**：用 docstring 说明模块职责、在整体架构中的位置、与哪些模块交互。
+- **类和公共函数**：中文 Google 风格 docstring，写清：
+  - 用途；`Args`、`Returns`、`Raises`；
+  - 是否可取消（会不会响应 `asyncio.CancelledError` / `CancelToken`）；
+  - 是否线程安全（音频回调运行在 PortAudio 线程中，要特别注明）。
+- **关键逻辑**：音频帧处理、状态切换、打断与取消传播、进程组终止、AEC 参考信号对齐等，
+  逐段说明“为什么这样做”以及需要注意的坑。
+- **配置文件**：`config.yaml`、`tasks/*.yaml` 的每个字段都写中文注释（含义、可选值、默认值）。
+- **Shell 脚本**：每个步骤前写中文注释。
+
+## 命名与语言
+- 变量、函数、类名保持英文；日志、异常信息、语音回复使用中文。
+
+## 工程约定
+- 全量类型注解；`ruff` 格式化与检查；`pytest` 单元测试，测试函数的 docstring 用中文说明测试点。
+- 所有后台/长时间运行的协程必须通过 `TaskManager` 启动，禁止裸用 `asyncio.create_task`，
+  以保证可以被语音、打断、Agent 工具统一终止。
+- 技能只依赖 `SkillContext`，不得直接 import 其他技能或底层音频模块。
