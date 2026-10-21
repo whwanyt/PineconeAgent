@@ -72,8 +72,9 @@ target-version = "py311"
 [tool.ruff.lint]
 # E/F：基础错误；I：import 排序；UP：新语法；B：常见 bug；ASYNC：异步陷阱
 select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]
-# RUF001/002/003 会对中文全角标点报警，中文注释项目中关闭
-ignore = ["E501"]
+# E501：中文注释按字符计宽度不准，交给 formatter 处理
+# ASYNC109：允许异步函数带 timeout 参数（调用方更直观）
+ignore = ["E501", "ASYNC109"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pinecone"]
