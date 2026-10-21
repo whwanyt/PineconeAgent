@@ -152,4 +152,9 @@ skills:
   # 插件技能目录，每个含 __init__.py 的子目录是一个技能包。默认：[plugins]
   plugin_dirs: [plugins]
   # 各技能的私有配置，键为技能名
-  settings: {}
+  settings:
+    alarm:
+      # 最长响铃时长（秒），超时自动停止。默认：60
+      ring_seconds: 60
+      # “再睡一会儿”没说分钟数时的贪睡时长（分钟）。默认：5
+      snooze_minutes: 5

@@ -11,24 +11,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from pinecone.nlu.timeparse import period_of_day
 from pinecone.skills import Intent, Skill, SkillContext, SkillResult, ToolSpec, register_skill
 
 WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-
-
-def period_of_day(hour: int) -> str:
-    """按小时返回口语时段。"""
-    if hour < 5:
-        return "凌晨"
-    if hour < 9:
-        return "早上"
-    if hour < 12:
-        return "上午"
-    if hour < 13:
-        return "中午"
-    if hour < 18:
-        return "下午"
-    return "晚上"
 
 
 def spoken_time(dt: datetime) -> str:
