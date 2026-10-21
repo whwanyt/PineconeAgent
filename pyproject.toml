@@ -24,6 +24,7 @@ dependencies = [
     "miniaudio>=1.59",          # 解码 edge-tts 返回的 mp3 数据
     # ---- 语音（唤醒词 / VAD / 识别 / 本地合成）----
     "sherpa-onnx>=1.10.30",
+    "pypinyin>=0.51",           # 把中文唤醒词转换成唤醒模型需要的拼音音素
     # ---- 云端 TTS ----
     "edge-tts>=6.1.12",
     # ---- 技能 ----

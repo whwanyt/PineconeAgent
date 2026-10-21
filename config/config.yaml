@@ -58,3 +58,34 @@ audio:
     filter_ms: 200
     # webrtc 后端是否同时降噪。默认：true
     noise_suppression: true
+
+# ---- 唤醒词（sherpa-onnx 关键词检测，离线）----
+wake:
+  # 模型目录，bash scripts/download_models.sh kws 下载。默认：models/kws
+  model_dir: models/kws
+  # 唤醒词列表，任意中文均可（自动转拼音），建议 3~4 字、不常出现在日常对话中。默认：[小派小派]
+  keywords:
+    - 小派小派
+  # 触发阈值（0~1），越大越不易误唤醒、也越难唤醒。默认：0.25
+  threshold: 0.25
+  # 唤醒词加分，越大越容易唤醒。默认：1.5
+  score: 1.5
+  # 推理线程数。默认：1
+  num_threads: 1
+  # 使用 int8 量化模型（树莓派上更快）。默认：true
+  use_int8: true
+
+# ---- 语音活动检测（Silero VAD，离线）----
+vad:
+  # 模型路径，bash scripts/download_models.sh vad 下载。默认：models/silero_vad.onnx
+  model: models/silero_vad.onnx
+  # 语音概率阈值（0~1），环境嘈杂可调到 0.6~0.7。默认：0.5
+  threshold: 0.5
+  # 静音多久算一句话说完（毫秒）。默认：700
+  min_silence_ms: 700
+  # 短于该时长的声音不算说话（毫秒）。默认：250
+  min_speech_ms: 250
+  # 单句最长时长（秒），超过强制截断。默认：15
+  max_speech_s: 15
+  # 唤醒后多久没开口就放弃本次聆听（秒）。默认：6
+  no_speech_timeout_s: 6

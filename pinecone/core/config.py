@@ -86,6 +86,40 @@ class AudioConfig(BaseModel):
     aec: AecConfig = Field(default_factory=AecConfig)
 
 
+class WakeConfig(BaseModel):
+    """唤醒词配置（sherpa-onnx 关键词检测）。"""
+
+    model_dir: str = "models/kws"
+    """唤醒模型目录（scripts/download_models.sh kws 下载）。"""
+    keywords: list[str] = Field(default_factory=lambda: ["小派小派"])
+    """唤醒词列表，任意中文均可，建议 3~4 个字、发音清晰、不常出现在日常对话中。"""
+    threshold: float = Field(0.25, gt=0.0, lt=1.0)
+    """触发阈值，越大越不容易误唤醒、但也越难唤醒。"""
+    score: float = 1.5
+    """唤醒词路径加分，越大越容易唤醒。"""
+    num_threads: int = 1
+    """推理线程数。唤醒模型很小，1 个线程足够。"""
+    use_int8: bool = True
+    """是否使用 int8 量化模型（树莓派上更快，精度几乎无损）。"""
+
+
+class VadConfig(BaseModel):
+    """语音活动检测（Silero VAD）配置。"""
+
+    model: str = "models/silero_vad.onnx"
+    """VAD 模型路径。"""
+    threshold: float = Field(0.5, gt=0.0, lt=1.0)
+    """语音概率阈值，环境嘈杂时可调高到 0.6~0.7。"""
+    min_silence_ms: int = 700
+    """静音持续多久认为一句话说完（毫秒）。太短会把句中停顿截断，太长响应变慢。"""
+    min_speech_ms: int = 250
+    """短于该时长的声音不算说话（过滤咳嗽、敲击声）。"""
+    max_speech_s: float = 15.0
+    """单句最长时长（秒），超过强制截断。"""
+    no_speech_timeout_s: float = 6.0
+    """唤醒后多久没开口就放弃本次聆听（秒）。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -95,6 +129,8 @@ class AppConfig(BaseModel):
     """运行时数据目录（SQLite 数据库等），相对项目根目录。"""
     log: LogConfig = Field(default_factory=LogConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    wake: WakeConfig = Field(default_factory=WakeConfig)
+    vad: VadConfig = Field(default_factory=VadConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。
