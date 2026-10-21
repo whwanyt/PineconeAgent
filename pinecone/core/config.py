@@ -70,6 +70,17 @@ class AecConfig(BaseModel):
     """webrtc 后端是否同时开启降噪。"""
 
 
+class BargeInConfig(BaseModel):
+    """对话打断配置。"""
+
+    wake_word: bool = True
+    """播报 / 思考时说唤醒词即可打断（任何 AEC 模式下都可用）。"""
+    vad: bool = False
+    """播报时直接开口即可打断。必须在回声消除生效时才会启用，否则会被自己的声音打断。"""
+    wake_threshold_boost: float = Field(0.15, ge=0.0, le=0.7)
+    """播报期间唤醒阈值的提高量，防止扬声器声音误唤醒。"""
+
+
 class AudioConfig(BaseModel):
     """音频输入输出配置。"""
 
@@ -84,6 +95,7 @@ class AudioConfig(BaseModel):
     volume: float = Field(0.8, ge=0.0, le=1.0)
     """语音播报音量（0~1）。"""
     aec: AecConfig = Field(default_factory=AecConfig)
+    barge_in: BargeInConfig = Field(default_factory=BargeInConfig)
 
 
 class WakeConfig(BaseModel):
@@ -158,6 +170,17 @@ class TtsConfig(BaseModel):
     """缓存最近合成过的短句（如“好的”“已为你设置闹钟”），重复播报时零延迟。"""
 
 
+class DialogConfig(BaseModel):
+    """对话流程配置。"""
+
+    follow_up_s: float = 6.0
+    """播报结束后的追问窗口（秒），窗口内无需唤醒词可直接继续说话；0 表示关闭。"""
+    wake_beep: bool = True
+    """唤醒成功时播放提示音。"""
+    wake_reply: str = ""
+    """唤醒成功时的语音应答（如“我在”），为空则只播提示音。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -171,6 +194,7 @@ class AppConfig(BaseModel):
     vad: VadConfig = Field(default_factory=VadConfig)
     asr: AsrConfig = Field(default_factory=AsrConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
+    dialog: DialogConfig = Field(default_factory=DialogConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。

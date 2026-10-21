@@ -314,20 +314,37 @@ class TaskManager:
     ) -> int:
         """取消所有前台任务（打断 / “停止”时使用），后台任务不受影响。
 
+        调用方自身所在的托管任务不会被取消（例如“停止”指令是在“对话”任务里处理的，
+        不能把自己也取消掉，否则后面的“好的”就播不出来了）。
+
         Args:
             reason: 取消原因。
-            exclude: 不取消的任务 id（例如发起取消的任务本身）。
+            exclude: 额外不取消的任务 id。
 
         Returns:
             被取消的任务数量。
         """
-        exclude = exclude or set()
-        return sum(t.cancel(reason) for t in self.list(TaskKind.FOREGROUND) if t.id not in exclude)
+        skip = self._exclude_ids(exclude)
+        return sum(t.cancel(reason) for t in self.list(TaskKind.FOREGROUND) if t.id not in skip)
 
     def cancel_all(self, reason: str = "user", *, exclude: set[str] | None = None) -> int:
-        """取消所有可取消任务，返回数量。"""
-        exclude = exclude or set()
-        return sum(t.cancel(reason) for t in self.list() if t.id not in exclude)
+        """取消所有可取消任务（调用方自身所在任务除外），返回数量。"""
+        skip = self._exclude_ids(exclude)
+        return sum(t.cancel(reason) for t in self.list() if t.id not in skip)
+
+    def current(self) -> RunningTask | None:
+        """返回调用方所在的托管任务（不在托管任务中时返回 None）。"""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            return None
+        return next((t for t in self._tasks.values() if t._task is task), None)
+
+    def _exclude_ids(self, exclude: set[str] | None) -> set[str]:
+        skip = set(exclude or ())
+        if (me := self.current()) is not None:
+            skip.add(me.id)
+        return skip
 
     async def shutdown(self, timeout: float = 5.0) -> None:
         """程序退出时强制取消全部任务并等待它们结束。"""

@@ -59,6 +59,16 @@ audio:
     # webrtc 后端是否同时降噪。默认：true
     noise_suppression: true
 
+  # ---- 对话打断 ----
+  barge_in:
+    # 播报 / 思考时说唤醒词即可打断（任何 AEC 模式都可用）。默认：true
+    wake_word: true
+    # 播报时直接开口即可打断；只有回声消除生效时才会真正启用。默认：false
+    # 建议先确认 software / pipewire / hardware 回声消除效果良好后再打开。
+    vad: false
+    # 播报期间唤醒阈值提高量（0~0.7），防止扬声器声音误唤醒。默认：0.15
+    wake_threshold_boost: 0.15
+
 # ---- 唤醒词（sherpa-onnx 关键词检测，离线）----
 wake:
   # 模型目录，bash scripts/download_models.sh kws 下载。默认：models/kws
@@ -123,3 +133,12 @@ tts:
   num_threads: 2
   # 短句合成结果缓存条数（“好的”这类高频回复零延迟）。默认：64
   cache_size: 64
+
+# ---- 对话流程 ----
+dialog:
+  # 播报结束后的追问窗口（秒），窗口内无需唤醒词可直接继续说；0 表示关闭。默认：6
+  follow_up_s: 6
+  # 唤醒成功时播放提示音。默认：true
+  wake_beep: true
+  # 唤醒成功时的语音应答（如 "我在"），为空只播提示音。默认：""
+  wake_reply: ""
