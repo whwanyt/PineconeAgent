@@ -8,6 +8,7 @@
               ├─ AudioOutput ◀── Speaker ◀── TTS
               ├─ EchoCanceller（连接 AudioInput 与 AudioOutput）
               └─ DialogController（订阅事件，驱动整个对话流程）
+                    └─ IntentRouter ─▶ SkillManager（规则匹配技能）
 
 两种运行模式：
     - 语音模式（默认）：麦克风 + 唤醒词 + 识别；
@@ -29,6 +30,8 @@ from pinecone.core.config import AppConfig
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
 from pinecone.dialog import DialogController, EchoHandler
+from pinecone.nlu.router import IntentRouter
+from pinecone.skills import SkillContext, SkillManager
 from pinecone.speech.tts import Speaker, create_tts
 
 logger = logging.getLogger(__name__)
@@ -94,12 +97,32 @@ class App:
             handler=EchoHandler(),
         )
 
+    def _make_skill_context(self, skill_name: str) -> SkillContext:
+        """为每个技能创建专属上下文。"""
+        ctx = SkillContext(
+            skill_name=skill_name,
+            config=self.config,
+            bus=self.bus,
+            tasks=self.tasks,
+            dialog=self.dialog,
+            output=self.output,
+        )
+        ctx.extras["skills"] = self.skills
+        return ctx
+
     async def setup(self) -> None:
         """创建并启动各模块（不阻塞）。"""
         self.bus.bind_loop(asyncio.get_running_loop())
         self.dialog = (
             self._build_text_frontend() if self.text_mode else self._build_voice_frontend()
         )
+
+        # 技能：加载完成后用路由器替换调试用的 EchoHandler
+        self.skills = SkillManager(self.config, self.tasks, self._make_skill_context)
+        await self.skills.load()
+        self.router = IntentRouter(self.skills)
+        self.dialog.set_handler(self.router)
+
         self.dialog.start()
         self.output.start()
         if self.mic is not None:
@@ -132,6 +155,7 @@ class App:
         if self.mic is not None:
             self.mic.stop()
         await self.tasks.shutdown()
+        await self.skills.unload()
         self.output.stop()
 
     async def _text_loop(self) -> None:

@@ -181,6 +181,19 @@ class DialogConfig(BaseModel):
     """唤醒成功时的语音应答（如“我在”），为空则只播提示音。"""
 
 
+class SkillsConfig(BaseModel):
+    """技能配置。"""
+
+    enabled: list[str] = Field(default_factory=lambda: ["*"])
+    """启用的技能名列表，"*" 表示全部（内置 + plugins/ 下的插件）。"""
+    disabled: list[str] = Field(default_factory=list)
+    """禁用的技能名列表（优先级高于 enabled）。"""
+    plugin_dirs: list[str] = Field(default_factory=lambda: ["plugins"])
+    """插件技能目录，目录下每个子目录（含 __init__.py）是一个技能包。"""
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """各技能的私有配置，键为技能名，例如 settings.music.library: ~/Music。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -195,6 +208,7 @@ class AppConfig(BaseModel):
     asr: AsrConfig = Field(default_factory=AsrConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     dialog: DialogConfig = Field(default_factory=DialogConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。

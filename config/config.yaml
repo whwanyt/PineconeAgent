@@ -142,3 +142,14 @@ dialog:
   wake_beep: true
   # 唤醒成功时的语音应答（如 "我在"），为空只播提示音。默认：""
   wake_reply: ""
+
+# ---- 技能 ----
+skills:
+  # 启用的技能名，"*" 表示全部（内置 + 插件）。默认：["*"]
+  enabled: ["*"]
+  # 禁用的技能名（优先于 enabled），例如 [music]。默认：[]
+  disabled: []
+  # 插件技能目录，每个含 __init__.py 的子目录是一个技能包。默认：[plugins]
+  plugin_dirs: [plugins]
+  # 各技能的私有配置，键为技能名
+  settings: {}
