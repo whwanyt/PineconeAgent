@@ -220,3 +220,6 @@ agent:
   # transport 可选：stdio / streamable_http / sse / websocket；也兼容 Cursor、ModelScope 等平台
   # 复制来的 type 写法（如 type: streamableHttp），两者都不写时按 command / url 自动推断。
   mcp_servers: {}
+  # 单次 MCP 工具调用超时（秒）。远程服务断线、限流时不会一直等待，
+  # 而是告诉 AI“工具暂时不可用”，由 AI 正常回复。默认：30
+  mcp_tool_timeout_s: 30

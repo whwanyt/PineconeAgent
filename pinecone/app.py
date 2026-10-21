@@ -156,7 +156,10 @@ class App:
         agent = VoiceAgent(
             self.config,
             model,
-            tools=[*skill_tools(self.skills), *await load_mcp_tools(cfg.mcp_servers)],
+            tools=[
+                *skill_tools(self.skills),
+                *await load_mcp_tools(cfg.mcp_servers, call_timeout_s=cfg.mcp_tool_timeout_s),
+            ],
             checkpointer=checkpointer,
             memory=memory,
             middleware=[summarization],

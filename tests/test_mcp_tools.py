@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
-from pinecone.agent.tools.mcp_tools import load_mcp_tools, normalize_connection
+import pytest
+from langchain_core.tools import StructuredTool
+
+from pinecone.agent.tools.mcp_tools import (
+    _fail_fast,
+    _with_fail_fast,
+    guard_tool,
+    load_mcp_tools,
+    normalize_connection,
+)
 
 SERVER = str(Path(__file__).with_name("mcp_demo_server.py"))
 
@@ -49,6 +60,72 @@ def test_normalize_connection() -> None:
         "transport": "stdio",
         "command": "x",
     }
+
+
+def _fake_mcp_tool(coroutine: Any) -> StructuredTool:
+    """构造与适配器同形的工具：返回 (内容, 附件) 二元组。"""
+    return StructuredTool.from_function(
+        coroutine=coroutine,
+        name="svc_search",
+        description="搜索",
+        response_format="content_and_artifact",
+    )
+
+
+async def test_guard_timeout() -> None:
+    """工具挂起（mcp 库断线后不返回）时按超时返回说明文字，而不是一直等待。"""
+
+    async def hang(query: str) -> tuple[str, None]:
+        await asyncio.sleep(60)
+        return "不会返回", None
+
+    tool = guard_tool(_fake_mcp_tool(hang), timeout_s=0.1)
+    async with asyncio.timeout(5):
+        result = await tool.ainvoke({"query": "新闻"})
+    assert "暂时不可用" in result and "超时" in result
+
+
+async def test_guard_error() -> None:
+    """连接中断等异常转成说明文字；正常调用结果不受影响。"""
+
+    async def broken(query: str) -> tuple[str, None]:
+        raise ConnectionError("peer closed connection")
+
+    async def ok(query: str) -> tuple[str, None]:
+        return f"结果：{query}", None
+
+    assert "连接中断" in await guard_tool(_fake_mcp_tool(broken), 5).ainvoke({"query": "x"})
+    assert await guard_tool(_fake_mcp_tool(ok), 5).ainvoke({"query": "x"}) == "结果：x"
+
+
+async def test_guard_keeps_cancellation() -> None:
+    """打断时取消照常传播，不会被转成文字结果吞掉。"""
+
+    async def hang(query: str) -> tuple[str, None]:
+        await asyncio.sleep(60)
+        return "", None
+
+    task = asyncio.ensure_future(guard_tool(_fake_mcp_tool(hang), 30).ainvoke({"query": "x"}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_fail_fast_handler() -> None:
+    """传输层异常由消息回调立即抛出（让等待中的请求马上失败）；用户自己的回调不被覆盖。"""
+    with pytest.raises(ConnectionError):
+        await _fail_fast(ConnectionError("peer closed connection"))
+    await _fail_fast(object())  # 普通消息 / 通知不受影响
+
+    conn = _with_fail_fast({"transport": "stdio", "command": "x"})
+    assert conn["session_kwargs"]["message_handler"] is _fail_fast
+
+    async def mine(message: Any) -> None:
+        return None
+
+    custom = _with_fail_fast({"transport": "stdio", "session_kwargs": {"message_handler": mine}})
+    assert custom["session_kwargs"]["message_handler"] is mine
 
 
 async def test_load_with_type_key() -> None:

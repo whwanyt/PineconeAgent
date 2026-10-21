@@ -225,6 +225,8 @@ class AgentConfig(BaseModel):
     """是否启用长期记忆（remember / recall / forget 工具 + 每轮注入相关记忆）。"""
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """MCP 服务：服务名 → 连接配置（transport: stdio / streamable_http / sse / websocket）。"""
+    mcp_tool_timeout_s: float = 30.0
+    """单次 MCP 工具调用超时（秒）。超时或连接中断时把错误说明交给模型，避免整轮对话卡死。"""
 
 
 class AppConfig(BaseModel):
