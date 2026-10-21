@@ -56,6 +56,19 @@ async def test_fallback_and_cache() -> None:
         await FallbackTTS(FakeTTS(fail=True), None, 0).synthesize("x")
 
 
+async def test_fallback_cooldown() -> None:
+    """主引擎失败后，冷却期内不再尝试主引擎，冷却结束后恢复。"""
+    primary, backup = FakeTTS(fail=True), FakeTTS()
+    tts = FallbackTTS(primary, backup, cache_size=0, cooldown_s=0.05)
+    await tts.synthesize("一")
+    await tts.synthesize("二")
+    assert primary.calls == ["一"] and backup.calls == ["一", "二"]
+    await asyncio.sleep(0.06)
+    primary.fail = False
+    await tts.synthesize("三")
+    assert primary.calls == ["一", "三"]
+
+
 @pytest.mark.skipif(
     not (PROJECT_ROOT / "models" / "tts" / "model-steps-3.onnx").exists(), reason="未下载 tts 模型"
 )

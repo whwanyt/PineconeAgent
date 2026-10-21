@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import TYPE_CHECKING
@@ -39,32 +40,49 @@ class FallbackTTS(TextToSpeech):
 
     缓存：短句（不超过 20 字）的合成结果按文本缓存（LRU），像“好的”“已停止”这类高频回复
     第二次播报时没有任何合成延迟，断网时也能使用缓存。
+
+    熔断：主引擎失败后 ``cooldown_s`` 秒内直接使用降级引擎。否则断网时每一句都要先等
+    在线合成超时（默认 4 秒）才降级，一段多句的回复会被拖得很慢。
     """
 
     name = "fallback"
     _CACHE_MAX_CHARS = 20
 
     def __init__(
-        self, primary: TextToSpeech, fallback: TextToSpeech | None, cache_size: int
+        self,
+        primary: TextToSpeech,
+        fallback: TextToSpeech | None,
+        cache_size: int,
+        cooldown_s: float = 60.0,
     ) -> None:
         self._primary = primary
         self._fallback = fallback
         self._cache: OrderedDict[str, Audio] = OrderedDict()
         self._cache_size = cache_size
+        self._cooldown_s = cooldown_s
+        self._primary_down_until = 0.0
 
     async def synthesize(self, text: str) -> Audio:
         if text in self._cache:
             self._cache.move_to_end(text)
             return self._cache[text]
-        try:
-            audio = await self._primary.synthesize(text)
-        except Exception as exc:
-            if self._fallback is None:
-                raise
-            logger.warning(
-                "%s 合成失败（%s），改用 %s", self._primary.name, exc, self._fallback.name
-            )
+        if self._fallback is not None and time.monotonic() < self._primary_down_until:
             audio = await self._fallback.synthesize(text)
+        else:
+            try:
+                audio = await self._primary.synthesize(text)
+            except Exception as exc:
+                if self._fallback is None:
+                    raise
+                self._primary_down_until = time.monotonic() + self._cooldown_s
+                logger.warning(
+                    "%s 合成失败（%s），%.0f 秒内改用 %s",
+                    self._primary.name,
+                    exc,
+                    self._cooldown_s,
+                    self._fallback.name,
+                )
+                audio = await self._fallback.synthesize(text)
         if self._cache_size > 0 and len(text) <= self._CACHE_MAX_CHARS:
             self._cache[text] = audio
             while len(self._cache) > self._cache_size:
