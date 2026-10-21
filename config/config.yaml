@@ -89,3 +89,16 @@ vad:
   max_speech_s: 15
   # 唤醒后多久没开口就放弃本次聆听（秒）。默认：6
   no_speech_timeout_s: 6
+
+# ---- 语音识别（SenseVoice-Small，离线）----
+asr:
+  # 识别引擎，目前支持 sensevoice。默认：sensevoice
+  engine: sensevoice
+  # 模型目录，bash scripts/download_models.sh asr 下载。默认：models/asr
+  model_dir: models/asr
+  # 识别语言：auto / zh / en / ja / ko / yue。默认：auto
+  language: auto
+  # 逆文本正则化（“七点半”→“7点半”、加标点），便于解析时间。默认：true
+  use_itn: true
+  # 推理线程数。默认：2
+  num_threads: 2

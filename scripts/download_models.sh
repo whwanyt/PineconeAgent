@@ -70,6 +70,8 @@ download_vad() {
 # ---- 语音识别：SenseVoice-Small（中英日韩粤，带标点和逆文本正则化）----
 download_asr() {
   fetch_tarball "$GH/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2" asr
+  # 程序只使用 int8 量化模型，删除约 900MB 的 fp32 模型，节省树莓派 SD 卡空间
+  rm -f "$MODELS_DIR/asr/model.onnx"
 }
 
 # ---- 本地语音合成：Matcha 中文模型 + vocos 声码器（断网时的降级方案）----

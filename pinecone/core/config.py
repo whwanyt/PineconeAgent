@@ -120,6 +120,21 @@ class VadConfig(BaseModel):
     """唤醒后多久没开口就放弃本次聆听（秒）。"""
 
 
+class AsrConfig(BaseModel):
+    """语音识别配置。"""
+
+    engine: Literal["sensevoice"] = "sensevoice"
+    """识别引擎。目前提供本地 SenseVoice；新增云端引擎时在 speech/asr/ 下加实现并扩展此处。"""
+    model_dir: str = "models/asr"
+    """模型目录（scripts/download_models.sh asr 下载）。"""
+    language: Literal["auto", "zh", "en", "ja", "ko", "yue"] = "auto"
+    """识别语言，auto 自动判断。只说普通话时设为 zh 略微更准。"""
+    use_itn: bool = True
+    """逆文本正则化：把“七点半”输出为“7点半”、加标点，便于后续解析时间。"""
+    num_threads: int = 2
+    """推理线程数。树莓派 5 有 4 核，2 线程时 5 秒语音约 0.3 秒识别完。"""
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。"""
 
@@ -131,6 +146,7 @@ class AppConfig(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     wake: WakeConfig = Field(default_factory=WakeConfig)
     vad: VadConfig = Field(default_factory=VadConfig)
+    asr: AsrConfig = Field(default_factory=AsrConfig)
 
     def resolve_path(self, path: str | Path) -> Path:
         """把配置中的相对路径解析为基于项目根目录的绝对路径。
