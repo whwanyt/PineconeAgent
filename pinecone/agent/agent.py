@@ -49,10 +49,8 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
 from pinecone.agent.question import (
-    AnswerKind,
     PendingQuestion,
     omit_repeated_lead,
-    parse_answer,
     pending_from_value,
 )
 from pinecone.agent.tools.ask_user import ask_user_tool
@@ -167,21 +165,15 @@ class VoiceAgent:
     async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。
 
-        有未完成的 ``ask_user`` 时，这句是回答而不是新的用户消息：能解析就恢复图，
-        听不清则再把问句说一遍。改口由路由器在调用本方法前丢掉这次提问。
+        有未完成的 ``ask_user`` 时，这句一律恢复那次提问：说了第几个就选中，
+        否则把原话作为工具结果交给模型。
 
         Args:
             text: 用户原话。没有提问时写入会话历史；正在提问时作为 ``interrupt`` 的返回值。
             hint: 技能转交时的情况说明，只进本轮系统提示，不写进用户消息。
         """
         reply = Reply(follow_up=True)
-        pending = await self.pending_question()
-        if pending is not None:
-            answer = parse_answer(text, pending.choices, limit=pending.limit)
-            if answer.kind is AnswerKind.UNCLEAR:
-                self._mark_question(reply, pending)
-                reply.text = pending.prompt
-                return reply
+        if await self.pending_question() is not None:
             reply.stream = self._drive(Command(resume=text), reply, memory_text=text, repair=False)
             return reply
         reply.stream = self._drive(

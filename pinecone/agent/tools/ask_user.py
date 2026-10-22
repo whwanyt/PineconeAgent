@@ -26,7 +26,6 @@ from pinecone.agent.question import (
 logger = logging.getLogger(__name__)
 
 _CANCELLED = "用户取消了选择。不要继续这项操作，除非用户重新提出。"
-_UNCLEAR = "没有听清要选哪一个。请再调用 ask_user 问一遍，不要自己选。"
 
 
 class AskUserArgs(BaseModel):
@@ -65,7 +64,9 @@ def ask_user_tool(choice_limit: int = 5) -> BaseTool:
                 f"用户选择了第{number}个：{parsed.choice.label}。"
                 "请只处理这一项，不要再问，也不要改选其他项。"
             )
-        return _UNCLEAR
+        spoken = str(answer).strip()
+        logger.info("用户没有按序号选择：%s", spoken)
+        return f"用户没有选第几个，原话是：{spoken}。请根据这句话继续，不要再把同一批选项念一遍。"
 
     return StructuredTool.from_function(
         coroutine=ask_user,

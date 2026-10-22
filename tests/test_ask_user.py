@@ -83,6 +83,19 @@ async def test_ask_user_pauses_until_the_user_picks() -> None:
     assert "用户选择了第2个：宝船，燕云十六声" in tool_msg.content
 
 
+async def test_free_reply_is_returned_to_the_model() -> None:
+    """没说第几个时，不重问，把原话交给模型。"""
+    model = ScriptedChatModel.from_script(_ask_call(), "好，给你放张靓颖的现场版。")
+    agent = VoiceAgent(AppConfig(), model)
+    await _spoken(agent, "播放宝船")
+    reply = await _spoken(agent, "就听张靓颖的现场版")
+    assert reply == "好，给你放张靓颖的现场版。"
+    assert await agent.pending_question() is None
+    tool_msg = next(message for message in model.received[-1] if isinstance(message, ToolMessage))
+    assert "用户没有选第几个" in tool_msg.content
+    assert "就听张靓颖的现场版" in tool_msg.content
+
+
 async def test_cancel_ask_user() -> None:
     """取消后模型收到取消说明，图不再暂停。"""
     model = ScriptedChatModel.from_script(_ask_call(), "好的，那就不放了。")

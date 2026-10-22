@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 
-from pinecone.agent.question import AnswerKind, parse_answer
 from pinecone.dialog import DialogHandler, Reply
 from pinecone.nlu.matcher import normalize
 from pinecone.skills.registry import SkillManager
@@ -71,10 +70,7 @@ class IntentRouter:
         return Reply(text=_DEFAULT_UNKNOWN, follow_up=False)
 
     async def _answer_pending(self, text: str) -> Reply | None:
-        """处理模型尚未答完的提问。没有提问时返回 None。
-
-        这句命中了别的技能规则时视为改口：丢掉提问，再按普通对话路由。
-        """
+        """有未完成的提问时，把这句原话交给模型，不按技能规则抢走。"""
         agent = self._fallback
         pending_of = getattr(agent, "pending_question", None)
         if pending_of is None:
@@ -82,13 +78,5 @@ class IntentRouter:
         pending = await pending_of()
         if pending is None:
             return None
-        answer = parse_answer(text, pending.choices, limit=pending.limit)
-        if answer.kind is not AnswerKind.UNCLEAR:
-            logger.info("回答提问：%s", text)
-            return await agent.handle(text)
-        if self._skills.match(normalize(text)) is not None:
-            logger.info("改口，放弃提问：%s", text)
-            agent.drop_pending()
-            return None
-        logger.info("没听清选项，再问一遍")
+        logger.info("回答提问：%s", text)
         return await agent.handle(text)
