@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 
+from pinecone.agent.question import AnswerKind, parse_answer
 from pinecone.dialog import DialogHandler, Reply
 from pinecone.nlu.matcher import normalize
 from pinecone.skills.registry import SkillManager
@@ -47,6 +48,10 @@ class IntentRouter:
             text: 用户原话。
             hint: 上层传入的情况说明；规则未命中时原样交给兜底 AI。
         """
+        pending_reply = await self._answer_pending(text)
+        if pending_reply is not None:
+            return pending_reply
+
         hit = self._skills.match(normalize(text))
         if hit is not None:
             skill, intent = hit
@@ -64,3 +69,26 @@ class IntentRouter:
             logger.info("规则未命中，交给 AI：%s", text)
             return await self._fallback.handle(text, hint=hint)
         return Reply(text=_DEFAULT_UNKNOWN, follow_up=False)
+
+    async def _answer_pending(self, text: str) -> Reply | None:
+        """处理模型尚未答完的提问。没有提问时返回 None。
+
+        这句命中了别的技能规则时视为改口：丢掉提问，再按普通对话路由。
+        """
+        agent = self._fallback
+        pending_of = getattr(agent, "pending_question", None)
+        if pending_of is None:
+            return None
+        pending = await pending_of()
+        if pending is None:
+            return None
+        answer = parse_answer(text, pending.choices, limit=pending.limit)
+        if answer.kind is not AnswerKind.UNCLEAR:
+            logger.info("回答提问：%s", text)
+            return await agent.handle(text)
+        if self._skills.match(normalize(text)) is not None:
+            logger.info("改口，放弃提问：%s", text)
+            agent.drop_pending()
+            return None
+        logger.info("没听清选项，再问一遍")
+        return await agent.handle(text)

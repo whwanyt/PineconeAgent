@@ -70,6 +70,10 @@ class Reply:
     stream: AsyncIterable[str] | None = None
     follow_up: bool = True
     """播报完是否进入追问窗口（AI 闲聊适合开启；“已停止”这类回复可以关闭）。"""
+    listen_s: float | None = None
+    """本轮追问窗口的秒数。为空时用配置里的 ``dialog.follow_up_s``。提问时用更长的等待。"""
+    choice_lines: str | None = None
+    """文本模式要打印的编号列表。语音模式只念问句。"""
 
 
 class DialogHandler(Protocol):
@@ -108,6 +112,7 @@ class DialogController:
         pipeline: SpeechPipeline | None = None,
         asr: SpeechRecognizer | None = None,
         aec_effective: bool = False,
+        show_choices: bool = False,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -118,6 +123,8 @@ class DialogController:
         self._handler = handler
         self._pipeline = pipeline
         self._asr = asr
+        # 文本模式打印候选编号；语音模式只念问句
+        self._show_choices = show_choices
         self._turn = 0
         self._timer: asyncio.TimerHandle | None = None
         self._beep = beep(sample_rate=16000)
@@ -287,8 +294,12 @@ class DialogController:
                 await self._speaker.say(reply.text or "")
         if turn != self._turn:
             return
+        if self._show_choices and reply.choice_lines:
+            print(reply.choice_lines, flush=True)
 
-        follow_up_s = self._config.dialog.follow_up_s
+        follow_up_s = (
+            reply.listen_s if reply.listen_s is not None else self._config.dialog.follow_up_s
+        )
         if reply.follow_up and follow_up_s > 0:
             await self._state.transition(S.FOLLOW_UP, "等待追问")
             self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn))

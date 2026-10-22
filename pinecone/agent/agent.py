@@ -12,6 +12,12 @@
     片段交给 Speaker，Speaker 内部按标点切句、边合成边播放，首句延迟约等于“首个整句生成时间”。
     工具调用产生的消息不会被念出来。
 
+模型提问：
+    只有模型调用 ``ask_user`` 时才会 ``interrupt``。流结束后如果检查点上还有未回答的提问，
+    把问句接在模型已经说出的话后面。下一句能解析成选项或取消时，用
+    ``Command(resume=用户原话)`` 沿用同一个 thread_id 继续。
+    已经暂停的提问不能补假的工具结果，否则无法恢复。
+
 打断与取消：
     整个流运行在「对话」托管任务中。被唤醒词打断或说“停止”时，任务被取消，
     ``CancelledError`` 会沿着异步生成器传进 LangGraph，模型请求随之中断。
@@ -39,7 +45,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 
+from pinecone.agent.question import AnswerKind, PendingQuestion, parse_answer, pending_from_value
+from pinecone.agent.tools.ask_user import ask_user_tool
 from pinecone.core.config import AppConfig
 from pinecone.dialog import Reply
 
@@ -69,6 +79,10 @@ class Session:
         self._thread_id = ""
         self._last_active = 0.0
 
+    def current(self) -> str:
+        """当前 thread_id。还没有会话时为空字符串，不会因此新建。"""
+        return self._thread_id
+
     def thread_id(self) -> str:
         """当前会话 id；空闲超时则开启新会话。"""
         now = time.time()
@@ -76,6 +90,15 @@ class Session:
             self._thread_id = f"voice-{int(now)}"
             logger.info("开启新会话：%s", self._thread_id)
         self._last_active = now
+        return self._thread_id
+
+    def hold(self) -> str:
+        """沿用当前会话并刷新空闲计时。有未完成提问时调用，避免打字或迟疑被切成新会话。"""
+        now = time.time()
+        self._last_active = now
+        if not self._thread_id:
+            self._thread_id = f"voice-{int(now)}"
+            logger.info("开启新会话：%s", self._thread_id)
         return self._thread_id
 
     def reset(self) -> None:
@@ -112,7 +135,11 @@ class VoiceAgent:
         self.session = Session(config.agent.session_idle_min)
         self._memory = memory
         name, persona = config.name, config.agent.persona
-        all_tools = [*tools, *(memory.tools() if memory else [])]
+        all_tools = [
+            ask_user_tool(config.agent.choice_limit),
+            *tools,
+            *(memory.tools() if memory else []),
+        ]
 
         @dynamic_prompt
         def system_prompt(request: ModelRequest) -> str:
@@ -134,23 +161,86 @@ class VoiceAgent:
     async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。
 
+        有未完成的 ``ask_user`` 时，这句是回答而不是新的用户消息：能解析就恢复图，
+        听不清则再把问句说一遍。改口由路由器在调用本方法前丢掉这次提问。
+
         Args:
-            text: 用户原话，写入会话历史。
+            text: 用户原话。没有提问时写入会话历史；正在提问时作为 ``interrupt`` 的返回值。
             hint: 技能转交时的情况说明，只进本轮系统提示，不写进用户消息。
         """
-        return Reply(stream=self._stream(text, hint=hint), follow_up=True)
+        reply = Reply(follow_up=True)
+        pending = await self.pending_question()
+        if pending is not None:
+            answer = parse_answer(text, pending.choices, limit=pending.limit)
+            if answer.kind is AnswerKind.UNCLEAR:
+                self._mark_question(reply, pending)
+                reply.text = pending.prompt
+                return reply
+            reply.stream = self._drive(Command(resume=text), reply, memory_text=text, repair=False)
+            return reply
+        reply.stream = self._drive(
+            {"messages": [{"role": "user", "content": text}]},
+            reply,
+            memory_text=text,
+            hint=hint,
+            repair=True,
+        )
+        return reply
 
-    async def _stream(self, text: str, *, hint: str | None = None) -> AsyncIterator[str]:
-        config: dict[str, Any] = {"configurable": {"thread_id": self.session.thread_id()}}
+    async def pending_question(self) -> PendingQuestion | None:
+        """当前会话里还没回答的提问。没有会话或已经回答过时返回 None。"""
+        thread = self.session.current()
+        if not thread:
+            return None
+        state = await self._graph.aget_state({"configurable": {"thread_id": thread}})
+        if state is None:
+            return None
+        for item in state.interrupts:
+            pending = pending_from_value(getattr(item, "value", None))
+            if pending is not None:
+                return pending
+        return None
+
+    def drop_pending(self) -> None:
+        """放弃未完成的提问并换一个新会话。旧检查点留在库里，不再恢复。"""
+        self.session.reset()
+
+    def _mark_question(self, reply: Reply, pending: PendingQuestion) -> None:
+        """让对话层用更长的追问窗口，并在文本模式打印编号。"""
+        reply.follow_up = True
+        reply.listen_s = self._config.agent.choice_timeout_s
+        reply.choice_lines = pending.lines
+
+    async def _run_config(self) -> dict[str, Any]:
+        """本轮使用的 thread 配置。有提问时不因空闲超时换会话。"""
+        if await self.pending_question() is not None:
+            thread = self.session.hold()
+        else:
+            thread = self.session.thread_id()
+        return {"configurable": {"thread_id": thread}}
+
+    async def _drive(
+        self,
+        graph_input: dict[str, Any] | Command,
+        reply: Reply,
+        *,
+        memory_text: str,
+        repair: bool,
+        hint: str | None = None,
+    ) -> AsyncIterator[str]:
+        """跑一轮图，产出要念的文本。模型提问暂停时，问句接在已生成文本的后面。"""
+        config = await self._run_config()
         produced = False
         try:
-            await self._repair_history(config)
-            context = AgentContext(memories=await self._load_memories(text), hint=hint or "")
+            if repair:
+                await self._repair_history(config)
+            context = AgentContext(memories=await self._load_memories(memory_text), hint=hint or "")
             async for chunk, metadata in self._graph.astream(
-                {"messages": [{"role": "user", "content": text}]},
+                graph_input,
                 config=config,
                 context=context,
                 stream_mode="messages",
+                durability="sync",
             ):
                 if metadata.get("langgraph_node") != "model" or not isinstance(
                     chunk, AIMessageChunk
@@ -160,9 +250,22 @@ class VoiceAgent:
                 if piece:
                     produced = True
                     yield piece
+            pending = await self.pending_question()
+            if pending is not None:
+                self._mark_question(reply, pending)
+                produced = True
+                yield pending.prompt
+        except GraphInterrupt:
+            pending = await self.pending_question()
+            if pending is not None:
+                self._mark_question(reply, pending)
+                yield pending.prompt
+                return
+            logger.exception("AI 对话失败")
+            if not produced:
+                yield _ERROR_REPLY
         except Exception:
             logger.exception("AI 对话失败")
-            # 已经说了一半时不再追加道歉，避免听起来很奇怪
             if not produced:
                 yield _ERROR_REPLY
 
@@ -171,8 +274,16 @@ class VoiceAgent:
         return await self._memory.for_prompt(text) if self._memory else []
 
     async def _repair_history(self, config: dict[str, Any]) -> None:
-        """给被打断的工具调用补上结果，保证会话历史合法。"""
+        """给被打断的工具调用补上结果，保证会话历史合法。
+
+        已经干净暂停、正在等用户回答的提问不能补假结果，否则恢复时对不上工具调用。
+        """
         state = await self._graph.aget_state(config)
+        if state is not None and any(
+            pending_from_value(getattr(item, "value", None)) is not None
+            for item in state.interrupts
+        ):
+            return
         messages = state.values.get("messages", []) if state and state.values else []
         if not messages:
             return

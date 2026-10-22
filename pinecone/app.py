@@ -106,6 +106,7 @@ class App:
             speaker=self.speaker,
             output=self.output,
             handler=EchoHandler(),
+            show_choices=True,
         )
 
     def _make_skill_context(self, skill_name: str) -> SkillContext:
