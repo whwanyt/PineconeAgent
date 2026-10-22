@@ -10,7 +10,9 @@
       “取消音乐”“停止所有任务”或“停止播放”都会终止它并停止播放器；
     - 音乐播放时，“停止 / 暂停 / 下一首 / 大声点”等短指令由本技能认领（优先级高于 task_control）；
       没有音乐在播时这些指令不认领，交给其他技能；
-    - 唤醒 / 思考 / 播报时自动把音乐压低（ducking），对话结束后恢复。
+    - 唤醒 / 思考 / 播报时自动把音乐压低（ducking），对话结束后恢复；
+    - 用户点的歌本地没有时，不自己联网，把原话交给 AI。AI 再调用播放时：
+      本地文件路径会先重扫曲库再播，音频 URL 直接播、不重扫。
 
 私有配置（config.yaml → skills.settings.music）::
 
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -32,7 +35,7 @@ from pinecone.core.task_manager import RunningTask
 from pinecone.skills import Intent, Skill, SkillContext, SkillResult, ToolSpec, register_skill
 
 from . import player as player_module
-from .library import MusicLibrary
+from .library import MusicLibrary, Track
 from .player import MusicPlayer
 
 # 需要“正在播放音乐”才认领的意图
@@ -56,7 +59,10 @@ _POLL_SECONDS = 0.5
 
 
 class PlayMusicArgs(BaseModel):
-    query: str = Field(default="", description="歌名、歌手或电台名；为空表示随机播放")
+    query: str = Field(
+        default="",
+        description="歌名、歌手、电台名、本地文件路径或 http(s) 音频地址；歌名为空表示随机播放本地曲库",
+    )
 
 
 def clean_query(text: str) -> str:
@@ -64,6 +70,18 @@ def clean_query(text: str) -> str:
     query = re.sub(r"^(一首|首|一点|点|一些|些|一下|几首)", "", text)
     query = re.sub(r"的?(歌曲|歌|音乐|专辑)?(吧|呗|啊|好吗)?$", "", query)
     return query.strip()
+
+
+def is_stream_url(text: str) -> bool:
+    """是否为可直接交给播放器的 http(s) 地址。"""
+    return text.lower().startswith(("http://", "https://"))
+
+
+def as_local_path(text: str) -> Path | None:
+    """绝对路径或 ``~/`` 开头时返回展开后的路径，否则不是本地地址。"""
+    if text.startswith("~") or Path(text).is_absolute():
+        return Path(text).expanduser()
+    return None
 
 
 @register_skill
@@ -137,7 +155,7 @@ class MusicSkill(Skill):
         if player is None:
             return SkillResult(reply="音乐播放器不可用，请先安装 mpv")
         if intent.name == "play":
-            return self._play(str(intent.slot("query", "")))
+            return self._play(intent)
         if not player.active:
             return SkillResult(reply="现在没有在放音乐")
 
@@ -164,25 +182,58 @@ class MusicSkill(Skill):
                 return self._change_volume(intent)
         return SkillResult()
 
-    def _play(self, raw_query: str) -> SkillResult:
+    def _play(self, intent: Intent) -> SkillResult:
+        """按目标类型播放。只在事件循环线程调用，不涉及音频回调。
+
+        本地路径先重扫：AI 刚把文件写进音乐目录时，内存里的曲库还是旧的。
+        URL 是现成的流，扫盘没有意义。歌名只用已有索引，用户原话没命中就交给 AI，
+        避免文件还没下载就白扫一次。
+        """
         assert self._player is not None
-        query = clean_query(raw_query)
+        target = str(intent.slot("query", "")).strip()
+        if is_stream_url(target):
+            return self._start([Track(title="在线音乐", uri=target)], "好的，播放在线音乐")
+        local = as_local_path(target)
+        if local is not None:
+            self._library.rescan()
+            if not local.is_file():
+                return self._missing(local.name, intent.source)
+            return self._start([Track(title=local.stem, uri=str(local))], f"好的，播放{local.stem}")
+
+        query = clean_query(target)
         station = self._library.find_station(query) if query else None
         if station is not None:
-            tracks, reply = [station], f"好的，播放{station.title}"
-        else:
-            tracks = self._library.search(query)
-            if not tracks:
-                if query:
-                    return SkillResult(reply=f"曲库里没有找到{query}")
-                return SkillResult(reply="曲库是空的，请把音乐放到音乐目录里")
-            reply = f"好的，播放{tracks[0].title}" if query else "好的，随机播放音乐"
+            return self._start([station], f"好的，播放{station.title}")
+        tracks = self._library.search(query)
+        if not tracks:
+            return self._missing(query, intent.source)
+        reply = f"好的，播放{tracks[0].title}" if query else "好的，随机播放音乐"
+        return self._start(tracks, reply)
+
+    def _start(self, tracks: list[Track], reply: str) -> SkillResult:
+        """替换播放列表并确保后台任务在跑。"""
+        assert self._player is not None
         self._ctx.logger.info("播放：%s 等 %d 首", tracks[0].title, len(tracks))
         self._player.play(tracks)
         self._apply_volume()
         if self._task is None:
             self._task = self._ctx.spawn(self._watch(), name="音乐播放")
         return SkillResult(reply=reply)
+
+    def _missing(self, query: str, source: str) -> SkillResult:
+        """本地没有这首。用户原话交给 AI；工具调用只返回说明，避免再转交一次。"""
+        if source == "agent":
+            if query:
+                reply = (
+                    f"本地曲库没有找到{query}。"
+                    "这里只查了本机文件。可以把本地文件路径或音频 URL 再传给 play_music："
+                    "本地路径会先重新扫描曲库，URL 会直接播放。"
+                )
+            else:
+                reply = "曲库是空的，请把音乐放到音乐目录里。也可以传入本地文件路径或音频 URL。"
+            return SkillResult(reply=reply)
+        reply = f"曲库里没有找到{query}" if query else "曲库是空的，请把音乐放到音乐目录里"
+        return SkillResult(reply=reply, delegate=True)
 
     def _stop(self) -> None:
         if self._player is not None:
@@ -231,7 +282,7 @@ class MusicSkill(Skill):
         return [
             ToolSpec(
                 name="play_music",
-                description="播放本地音乐或电台，可按歌名 / 歌手 / 电台名搜索",
+                description="只播放本机曲库、本地文件路径和音频 URL。传入本地路径时会先重新扫描曲库；传入 URL 时不会",
                 intent="play",
                 args_schema=PlayMusicArgs,
             ),

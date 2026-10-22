@@ -15,11 +15,19 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from abc import ABC, abstractmethod
 
 from .library import Track
 
 logger = logging.getLogger(__name__)
+
+# ctypes.macholib.dyld 在未设置 DYLD_FALLBACK_LIBRARY_PATH 时使用的默认目录。
+# 该变量一旦被设置就会替换这些默认值，补 Homebrew 路径时必须把它们带上。
+_DYLD_DEFAULT_LIBRARY_FALLBACK = ("~/lib", "/usr/local/lib", "/lib", "/usr/lib")
+# Apple Silicon 在 /opt/homebrew，Intel Homebrew 在 /usr/local。
+_HOMEBREW_LIB_CANDIDATES = ("/opt/homebrew/lib", "/usr/local/lib")
 
 
 class MusicPlayer(ABC):
@@ -69,10 +77,39 @@ class MusicPlayer(ABC):
         """释放资源。"""
 
 
+def _prepare_libmpv_search_path() -> None:
+    """让 macOS 上的 python-mpv 能找到 Homebrew 的 libmpv。
+
+    ``ctypes.util.find_library`` 只搜索 dyld 默认路径（``/usr/lib`` 等）。
+    Apple Silicon 的 ``brew install mpv`` 把 ``libmpv.dylib`` 放在
+    ``/opt/homebrew/lib``，不在其中，因此必须在 ``import mpv`` 之前写入
+    ``DYLD_FALLBACK_LIBRARY_PATH``。Linux 由 ldconfig 解析，这里什么都不做。
+
+    只修改当前进程的环境变量，在创建播放器时于事件循环线程调用，不涉及音频回调。
+    """
+    if sys.platform != "darwin":
+        return
+    extras = [path for path in _HOMEBREW_LIB_CANDIDATES if os.path.isdir(path)]
+    if not extras:
+        return
+    key = "DYLD_FALLBACK_LIBRARY_PATH"
+    current = os.environ.get(key)
+    if current:
+        parts = [part for part in current.split(":") if part]
+    else:
+        parts = [os.path.expanduser(path) for path in _DYLD_DEFAULT_LIBRARY_FALLBACK]
+    for path in reversed(extras):
+        if path not in parts:
+            parts.insert(0, path)
+    os.environ[key] = ":".join(parts)
+
+
 class MpvPlayer(MusicPlayer):
     """基于 libmpv 的播放器。"""
 
     def __init__(self, audio_device: str | None = None) -> None:
+        # 必须先补搜索路径再导入：python-mpv 在 import 时就用 find_library 加载 libmpv。
+        _prepare_libmpv_search_path()
         import mpv  # 延迟导入：没有 libmpv 时只是音乐技能不可用，不影响其他功能
 
         options = {
