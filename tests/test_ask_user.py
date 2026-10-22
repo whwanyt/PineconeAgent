@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
 from pinecone.agent import VoiceAgent
+from pinecone.agent.question import omit_repeated_lead
 from pinecone.core.config import AppConfig
 from tests.agent_fakes import ScriptedChatModel
 
@@ -33,15 +34,27 @@ def _list_songs_tool() -> StructuredTool:
 
 def _ask_call() -> AIMessage:
     return AIMessage(
-        content="搜到好几首。",
+        content="搜到好几首，你要哪一个？",
         tool_calls=[
             {
                 "name": "ask_user",
-                "args": {"question": "搜到好几首", "options": _OPTIONS},
+                "args": {"question": "搜到好几个版本，你想听哪一首？", "options": _OPTIONS},
                 "id": "c1",
             }
         ],
     )
+
+
+def test_omit_repeated_lead() -> None:
+    """模型已经说过的开场白不再接在选项前面。"""
+    prompt = (
+        "搜到好几个版本，你想听哪首？。第1个，黄诗扶，九万字。第2个，张靓颖，九万字。你要哪一个？"
+    )
+    already = "本地曲库没有这首歌，我去网上找一下。搜到好几个版本，你想听哪首？"
+    assert omit_repeated_lead(already, prompt) == (
+        "第1个，黄诗扶，九万字。第2个，张靓颖，九万字。你要哪一个？"
+    )
+    assert omit_repeated_lead("", prompt) == prompt
 
 
 async def _spoken(agent: VoiceAgent, text: str) -> str:
@@ -56,6 +69,7 @@ async def test_ask_user_pauses_until_the_user_picks() -> None:
     model = ScriptedChatModel.from_script(_ask_call(), "好的，播放燕云十六声的宝船。")
     agent = VoiceAgent(AppConfig(), model)
     asked = await _spoken(agent, "播放宝船")
+    assert "搜到好几个版本，你想听哪一首" not in asked
     assert "第1个，宝船，DOUDOU" in asked
     assert "第2个，宝船，燕云十六声" in asked
     assert "你要哪一个" in asked

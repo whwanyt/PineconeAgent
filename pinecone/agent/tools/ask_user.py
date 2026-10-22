@@ -32,7 +32,9 @@ _UNCLEAR = "没有听清要选哪一个。请再调用 ask_user 问一遍，不�
 class AskUserArgs(BaseModel):
     """``ask_user`` 的参数。选项会按顺序念给用户。"""
 
-    question: str = Field(description="问用户的开场白，例如「搜到好几首」")
+    question: str = Field(
+        description="你在调用前已经对用户说的那句问话，本工具不会再念一遍，只念下面的选项"
+    )
     options: list[str] = Field(
         description="要念给用户的短选项，按顺序，例如「宝船，DOUDOU」「宝船，燕云十六声」"
     )
@@ -49,7 +51,7 @@ def ask_user_tool(choice_limit: int = 5) -> BaseTool:
             Choice(id=str(index), label=label, slots={"index": index})
             for index, label in enumerate(labels)
         ]
-        pending = make_question(choices, prompt=question, limit=choice_limit)
+        pending = make_question(choices, prompt=question, limit=choice_limit, include_head=False)
         # 第一次在这里暂停；恢复后返回值是用户原话
         answer = interrupt(to_interrupt_value(pending))
         parsed = parse_answer(str(answer), pending.choices, limit=pending.limit)
@@ -69,7 +71,8 @@ def ask_user_tool(choice_limit: int = 5) -> BaseTool:
         coroutine=ask_user,
         name="ask_user",
         description=(
-            "有多个候选、用户又没指定是哪一个时，向用户提问并等待回答。"
+            "有多个候选、用户又没指定是哪一个时调用。先自己用一句话问用户，再调用本工具。"
+            "本工具只念「第几个」和选项，不会重复你刚说的那句。"
             "在这个工具返回之前，不要自己选第一条，也不要播放、删除或再次查询。"
         ),
         args_schema=AskUserArgs,

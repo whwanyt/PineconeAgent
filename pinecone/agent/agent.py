@@ -48,7 +48,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
-from pinecone.agent.question import AnswerKind, PendingQuestion, parse_answer, pending_from_value
+from pinecone.agent.question import (
+    AnswerKind,
+    PendingQuestion,
+    omit_repeated_lead,
+    parse_answer,
+    pending_from_value,
+)
 from pinecone.agent.tools.ask_user import ask_user_tool
 from pinecone.core.config import AppConfig
 from pinecone.dialog import Reply
@@ -231,6 +237,7 @@ class VoiceAgent:
         """跑一轮图，产出要念的文本。模型提问暂停时，问句接在已生成文本的后面。"""
         config = await self._run_config()
         produced = False
+        spoken: list[str] = []
         try:
             if repair:
                 await self._repair_history(config)
@@ -249,17 +256,22 @@ class VoiceAgent:
                 piece = _text_of(chunk)
                 if piece:
                     produced = True
+                    spoken.append(piece)
                     yield piece
             pending = await self.pending_question()
             if pending is not None:
                 self._mark_question(reply, pending)
-                produced = True
-                yield pending.prompt
+                extra = omit_repeated_lead("".join(spoken), pending.prompt)
+                if extra:
+                    produced = True
+                    yield extra
         except GraphInterrupt:
             pending = await self.pending_question()
             if pending is not None:
                 self._mark_question(reply, pending)
-                yield pending.prompt
+                extra = omit_repeated_lead("".join(spoken), pending.prompt)
+                if extra:
+                    yield extra
                 return
             logger.exception("AI 对话失败")
             if not produced:

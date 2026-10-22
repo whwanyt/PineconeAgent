@@ -67,12 +67,24 @@ class PendingQuestion:
     limit: int
 
 
-def spoken_question(choices: Sequence[Choice], *, prompt: str | None = None, limit: int = 5) -> str:
-    """生成念给用户的问句。没有选项时返回空字符串。"""
+def spoken_question(
+    choices: Sequence[Choice],
+    *,
+    prompt: str | None = None,
+    limit: int = 5,
+    include_head: bool = True,
+) -> str:
+    """生成念给用户的问句。没有选项时返回空字符串。
+
+    ``include_head`` 为 False 时不念开场白，只从「第1个」开始。
+    ``ask_user`` 用这个，避免和模型刚才说的那句重复。
+    """
     shown = _shown(choices, limit)
     if not shown:
         return ""
     body = "。".join(f"第{index}个，{choice.label}" for index, choice in enumerate(shown, 1))
+    if not include_head:
+        return f"{body}。你要哪一个？"
     head = (prompt or "").strip().rstrip("。")
     if not head:
         head = (
@@ -83,6 +95,23 @@ def spoken_question(choices: Sequence[Choice], *, prompt: str | None = None, lim
     return f"{head}。{body}。你要哪一个？"
 
 
+def omit_repeated_lead(already: str, prompt: str) -> str:
+    """模型已经说过开场白时，提问从「第1个」接上，避免同一句说两遍。
+
+    例如模型先说了「搜到好几个版本，你想听哪首」，问句里就不再重复这句。
+    开场白对不上时，整句问话照常念。
+    """
+    marker = "第1个"
+    index = prompt.find(marker)
+    if index <= 0 or not already.strip():
+        return prompt
+    lead = normalize(prompt[:index])
+    spoken = normalize(already)
+    if lead and spoken.endswith(lead):
+        return prompt[index:]
+    return prompt
+
+
 def numbered_lines(choices: Sequence[Choice], *, limit: int = 5) -> str:
     """文本模式打印的编号列表。"""
     shown = _shown(choices, limit)
@@ -90,12 +119,16 @@ def numbered_lines(choices: Sequence[Choice], *, limit: int = 5) -> str:
 
 
 def make_question(
-    choices: Sequence[Choice], *, prompt: str | None = None, limit: int = 5
+    choices: Sequence[Choice],
+    *,
+    prompt: str | None = None,
+    limit: int = 5,
+    include_head: bool = True,
 ) -> PendingQuestion:
     """从选项生成一次提问。实际可选项不超过 ``limit`` 个。"""
     shown = _shown(choices, limit)
     return PendingQuestion(
-        prompt=spoken_question(choices, prompt=prompt, limit=limit),
+        prompt=spoken_question(choices, prompt=prompt, limit=limit, include_head=include_head),
         lines=numbered_lines(choices, limit=limit),
         choices=shown,
         limit=len(shown),
