@@ -11,7 +11,8 @@
     - 音乐播放时，“停止 / 暂停 / 下一首 / 大声点”等短指令由本技能认领（优先级高于 task_control）；
       没有音乐在播时这些指令不认领，交给其他技能；
     - 唤醒 / 思考 / 播报时自动把音乐压低（ducking），对话结束后恢复；
-    - 用户点的歌本地没有时，不自己联网，把原话交给 AI。AI 再调用播放时：
+    - 用户点的歌本地没有时，不自己联网，把原话和 hint（本地没找到）交给 AI，
+      由模型先开口说明正在做什么，再决定要不要用其他工具。AI 再调用播放时：
       本地文件路径会先重扫曲库再播，音频 URL 直接播、不重扫。
 
 私有配置（config.yaml → skills.settings.music）::
@@ -221,7 +222,10 @@ class MusicSkill(Skill):
         return SkillResult(reply=reply)
 
     def _missing(self, query: str, source: str) -> SkillResult:
-        """本地没有这首。用户原话交给 AI；工具调用只返回说明，避免再转交一次。"""
+        """本地没有这首。用户原话交给 AI；工具调用只返回说明，避免再转交一次。
+
+        用户路径带 ``hint``：路由器不播报，只注入当轮模型上下文，由 AI 自己开口。
+        """
         if source == "agent":
             if query:
                 reply = (
@@ -233,7 +237,13 @@ class MusicSkill(Skill):
                 reply = "曲库是空的，请把音乐放到音乐目录里。也可以传入本地文件路径或音频 URL。"
             return SkillResult(reply=reply)
         reply = f"曲库里没有找到{query}" if query else "曲库是空的，请把音乐放到音乐目录里"
-        return SkillResult(reply=reply, delegate=True)
+        if query:
+            hint = (
+                f"本地曲库没有找到{query}，请用其他工具继续查找或下载，先用一句话告诉用户你在做什么"
+            )
+        else:
+            hint = "曲库是空的，请用其他工具继续查找或下载，先用一句话告诉用户你在做什么"
+        return SkillResult(reply=reply, delegate=True, hint=hint)
 
     def _stop(self) -> None:
         if self._player is not None:

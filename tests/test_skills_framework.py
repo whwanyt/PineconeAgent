@@ -72,7 +72,7 @@ async def test_skill_timeout_and_fallback(skill_env: SkillEnv) -> None:
     await skill_env.manager.load()
 
     class Fallback:
-        async def handle(self, text: str) -> Reply:
+        async def handle(self, text: str, *, hint: str | None = None) -> Reply:
             return Reply(text=f"AI:{text}")
 
     router = IntentRouter(skill_env.manager, Fallback())

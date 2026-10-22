@@ -55,7 +55,7 @@ class FakeAsr:
 
 
 class Handler:
-    async def handle(self, text: str) -> Reply:
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         return Reply(text=f"回复：{text}")
 
 

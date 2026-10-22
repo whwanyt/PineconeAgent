@@ -13,16 +13,42 @@ from pinecone.core.config import AppConfig
 from tests.agent_fakes import ScriptedChatModel
 
 
-async def _collect(agent: VoiceAgent, text: str) -> str:
-    reply = await agent.handle(text)
+async def _collect(agent: VoiceAgent, text: str, *, hint: str | None = None) -> str:
+    reply = await agent.handle(text, hint=hint)
     assert reply.stream is not None and reply.follow_up
     return "".join([piece async for piece in reply.stream])
 
 
 def test_system_prompt() -> None:
+    """系统提示含人设、记忆，以及“先说正在做什么再调工具”。"""
     prompt = build_system_prompt("小派", "说话温柔", ["用户叫小明"])
     assert "「小派」" in prompt and "说话温柔" in prompt and "- 用户叫小明" in prompt
     assert "当前时间" in prompt
+    assert "先用一句短口语告诉用户你在做什么" in prompt
+    assert "当前情况" not in prompt
+
+    with_hint = build_system_prompt("小派", hint="本地曲库没有找到孙燕姿")
+    assert "当前情况" in with_hint and "本地曲库没有找到孙燕姿" in with_hint
+    assert "当前情况" not in build_system_prompt("小派")
+
+
+async def test_hint_goes_to_system_prompt_not_history() -> None:
+    """hint 只进本轮系统提示，不写进用户消息；下一轮没有 hint 时不残留。"""
+    model = ScriptedChatModel.from_script("本地没有，我去搜一下。", "好的。")
+    agent = VoiceAgent(AppConfig(), model)
+    spoken = await _collect(agent, "播放孙燕姿", hint="本地曲库没有找到孙燕姿")
+    assert spoken == "本地没有，我去搜一下。"
+
+    first = model.received[0]
+    assert isinstance(first[0], SystemMessage)
+    assert "当前情况" in first[0].content
+    assert "本地曲库没有找到孙燕姿" in first[0].content
+    assert [m.content for m in first[1:]] == ["播放孙燕姿"]
+
+    await _collect(agent, "你好")
+    second = model.received[1]
+    assert isinstance(second[0], SystemMessage)
+    assert "当前情况" not in second[0].content
 
 
 async def test_stream_and_multi_turn() -> None:

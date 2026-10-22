@@ -12,8 +12,8 @@
     大模型负责规则覆盖不到的开放式问题和复杂表达。
 
 技能可以在规则命中后仍表示自己处理不了（``SkillResult.delegate``）。例如本地曲库没有这首歌时，
-不直接对用户说“没找到”，而是把原话交给兜底 AI，由它决定要不要用其他工具。没有配置 AI 时，
-仍播报技能准备好的 reply。
+不直接对用户说“没找到”，而是把原话和 ``hint``（情况说明）交给兜底 AI，由模型先开口、
+再决定要不要用其他工具。没有配置 AI 时，仍播报技能准备好的 reply。
 """
 
 from __future__ import annotations
@@ -40,22 +40,27 @@ class IntentRouter:
         """设置兜底处理器（AI Agent）。"""
         self._fallback = fallback
 
-    async def handle(self, text: str) -> Reply:
-        """路由一句用户文本。运行在可取消的「对话」任务中。"""
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+        """路由一句用户文本。运行在可取消的「对话」任务中。
+
+        Args:
+            text: 用户原话。
+            hint: 上层传入的情况说明；规则未命中时原样交给兜底 AI。
+        """
         hit = self._skills.match(normalize(text))
         if hit is not None:
             skill, intent = hit
             intent.text = text
             logger.info("规则命中：%s.%s %s", skill.name, intent.name, intent.slots or "")
             result = await self._skills.execute(skill, intent)
-            # 技能认领了这句话但处理不了（如本地没有这首歌）。有 AI 时把原话交回去，
-            # 不播报“没找到”，否则用户听不到后续的查找或下载。
+            # 技能认领了这句话但处理不了（如本地没有这首歌）。有 AI 时把原话和
+            # hint 交回去，不播报“没找到”，由模型自己告诉用户正在做什么。
             if result.delegate and self._fallback is not None:
                 logger.info("技能未处理，交给 AI：%s", text)
-                return await self._fallback.handle(text)
+                return await self._fallback.handle(text, hint=result.hint)
             return Reply(text=result.reply, stream=result.stream, follow_up=result.follow_up)
 
         if self._fallback is not None:
             logger.info("规则未命中，交给 AI：%s", text)
-            return await self._fallback.handle(text)
+            return await self._fallback.handle(text, hint=hint)
         return Reply(text=_DEFAULT_UNKNOWN, follow_up=False)

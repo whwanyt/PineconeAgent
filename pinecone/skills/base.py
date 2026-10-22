@@ -65,6 +65,9 @@ class SkillResult:
     delegate: bool = False
     """规则已经命中，但技能没有真正处理。路由器在配置了兜底 AI 时不播报 reply，
     把用户原话交给 AI。没有兜底时仍播报 reply。AI 工具调用不看这个字段，避免来回转交。"""
+    hint: str | None = None
+    """转交给兜底 AI 时的情况说明（例如本地曲库没找到）。框架不播报这句，
+    只注入当轮模型上下文，由模型自己开口告诉用户正在做什么。"""
 
 
 @dataclass

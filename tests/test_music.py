@@ -180,13 +180,15 @@ async def test_station_and_not_found(music) -> None:
 
 
 class _Fallback:
-    """记下交给 AI 的原话。"""
+    """记下交给 AI 的原话和 hint。"""
 
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.hints: list[str | None] = []
 
-    async def handle(self, text: str) -> Reply:
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         self.texts.append(text)
+        self.hints.append(hint)
         return Reply(text="交给我了", follow_up=False)
 
 
@@ -225,6 +227,9 @@ async def test_user_miss_delegates_without_rescan(
 
     assert reply.text == "交给我了"
     assert fallback.texts == ["我想听孙燕姿的歌"]
+    assert len(fallback.hints) == 1
+    assert fallback.hints[0] is not None
+    assert "本地曲库没有找到孙燕姿" in fallback.hints[0]
     assert calls["n"] == 0
     assert not fake.active
 

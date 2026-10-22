@@ -75,15 +75,20 @@ class Reply:
 class DialogHandler(Protocol):
     """处理一句已识别文本的对象（技能路由器实现此协议）。"""
 
-    async def handle(self, text: str) -> Reply:
-        """处理用户说的话并返回回复。运行在可取消的前台任务中。"""
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+        """处理用户说的话并返回回复。运行在可取消的前台任务中。
+
+        Args:
+            text: 用户原话。
+            hint: 技能转交时的情况说明，不播报，仅提供给兜底 AI。
+        """
         ...
 
 
 class EchoHandler:
     """调试用处理器：复述听到的话。"""
 
-    async def handle(self, text: str) -> Reply:
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         return Reply(text=f"你说的是：{text}")
 
 

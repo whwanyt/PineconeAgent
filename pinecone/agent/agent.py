@@ -57,6 +57,8 @@ class AgentContext:
 
     memories: list[str] = field(default_factory=list)
     """本次对话前检索到的长期记忆。"""
+    hint: str = ""
+    """技能转交时的情况说明（例如本地曲库没找到）。只注入本轮系统提示。"""
 
 
 class Session:
@@ -114,10 +116,11 @@ class VoiceAgent:
 
         @dynamic_prompt
         def system_prompt(request: ModelRequest) -> str:
-            # 每次调用模型时重新生成：当前时间会变，长期记忆来自运行时上下文
+            # 每次调用模型时重新生成：当前时间、长期记忆、本轮 hint 都可能变
             context = request.runtime.context
             memories = context.memories if isinstance(context, AgentContext) else []
-            return build_system_prompt(name, persona, memories)
+            hint = context.hint if isinstance(context, AgentContext) else ""
+            return build_system_prompt(name, persona, memories, hint=hint)
 
         self._graph = create_agent(
             model,
@@ -128,16 +131,21 @@ class VoiceAgent:
         )
         logger.info("AI 工具：%s", "、".join(t.name for t in all_tools) or "无")
 
-    async def handle(self, text: str) -> Reply:
-        """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。"""
-        return Reply(stream=self._stream(text), follow_up=True)
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+        """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。
 
-    async def _stream(self, text: str) -> AsyncIterator[str]:
+        Args:
+            text: 用户原话，写入会话历史。
+            hint: 技能转交时的情况说明，只进本轮系统提示，不写进用户消息。
+        """
+        return Reply(stream=self._stream(text, hint=hint), follow_up=True)
+
+    async def _stream(self, text: str, *, hint: str | None = None) -> AsyncIterator[str]:
         config: dict[str, Any] = {"configurable": {"thread_id": self.session.thread_id()}}
         produced = False
         try:
             await self._repair_history(config)
-            context = AgentContext(memories=await self._load_memories(text))
+            context = AgentContext(memories=await self._load_memories(text), hint=hint or "")
             async for chunk, metadata in self._graph.astream(
                 {"messages": [{"role": "user", "content": text}]},
                 config=config,
