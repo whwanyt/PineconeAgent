@@ -10,7 +10,9 @@ import pytest
 
 from pinecone.core.events import StateChanged
 from pinecone.core.state import AssistantState
+from pinecone.dialog import Reply
 from pinecone.nlu.router import IntentRouter
+from pinecone.skills import Intent, SkillResult
 from pinecone.skills.builtin.music import player as player_module
 from pinecone.skills.builtin.music.library import MusicLibrary, Track
 from pinecone.skills.builtin.music.player import MusicPlayer
@@ -170,10 +172,105 @@ async def test_play_and_control(music, skill_env: SkillEnv) -> None:
 
 
 async def test_station_and_not_found(music) -> None:
+    """没有 AI 时，本地找不到仍直接告诉用户。"""
     router, _, fake = music
     assert (await router.handle("播放中国之声")).text == "好的，播放中国之声"
     assert fake.current.uri == "http://example.com/zgzs.m3u8"
     assert (await router.handle("我想听孙燕姿的歌")).text == "曲库里没有找到孙燕姿"
+
+
+class _Fallback:
+    """记下交给 AI 的原话。"""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def handle(self, text: str) -> Reply:
+        self.texts.append(text)
+        return Reply(text="交给我了", follow_up=False)
+
+
+def _count_rescan(monkeypatch: pytest.MonkeyPatch, skill: MusicSkill) -> dict[str, int]:
+    """把重扫次数记下来，方便确认哪条路径扫了盘。"""
+    calls = {"n": 0}
+    original = skill._library.rescan
+
+    def wrapped() -> int:
+        calls["n"] += 1
+        return original()
+
+    monkeypatch.setattr(skill._library, "rescan", wrapped)
+    return calls
+
+
+async def _agent_play(skill: MusicSkill, query: str) -> SkillResult:
+    """模拟 AI 调用 play_music，不经过路由器。"""
+    return await skill.handle(
+        skill._ctx,
+        Intent(skill="music", name="play", slots={"query": query}, source="agent"),
+    )
+
+
+async def test_user_miss_delegates_without_rescan(
+    music, skill_env: SkillEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """索引里没有的歌交给 AI，不重扫，也不开始播放。"""
+    _, skill, fake = music
+    _ = skill._library.tracks
+    calls = _count_rescan(monkeypatch, skill)
+    fallback = _Fallback()
+    router = IntentRouter(skill_env.manager, fallback)
+
+    reply = await router.handle("我想听孙燕姿的歌")
+
+    assert reply.text == "交给我了"
+    assert fallback.texts == ["我想听孙燕姿的歌"]
+    assert calls["n"] == 0
+    assert not fake.active
+
+
+async def test_agent_local_path_rescans_before_play(music, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI 传入刚下载的本地路径时，先重扫再播放这个文件。"""
+    _, skill, fake = music
+    assert len(skill._library.tracks) == 3
+    new = skill._library._folders[0] / "岁月如笔写春秋.mp3"
+    new.write_bytes(b"")
+    calls = _count_rescan(monkeypatch, skill)
+
+    result = await _agent_play(skill, str(new))
+
+    assert calls["n"] == 1
+    assert not result.delegate
+    assert result.reply == "好的，播放岁月如笔写春秋"
+    assert fake.current is not None and fake.current.uri == str(new)
+    assert any(track.uri == str(new) for track in skill._library.tracks)
+
+
+async def test_agent_url_does_not_rescan(music, monkeypatch: pytest.MonkeyPatch) -> None:
+    """音频 URL 直接播放，不重扫曲库。"""
+    _, skill, fake = music
+    calls = _count_rescan(monkeypatch, skill)
+    url = "https://example.com/song.mp3"
+
+    result = await _agent_play(skill, url)
+
+    assert calls["n"] == 0
+    assert result.reply == "好的，播放在线音乐"
+    assert fake.current is not None and fake.current.uri == url
+
+
+async def test_agent_name_miss_stays_with_tool(music, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI 用歌名点播时不重扫；找不到只返回说明，不再交给 AI。"""
+    _, skill, fake = music
+    _ = skill._library.tracks
+    calls = _count_rescan(monkeypatch, skill)
+
+    result = await _agent_play(skill, "孙燕姿")
+
+    assert calls["n"] == 0
+    assert not result.delegate
+    assert result.reply is not None and result.reply.startswith("本地曲库没有找到孙燕姿")
+    assert not fake.active
 
 
 async def test_cancel_task_stops_music(music, skill_env: SkillEnv) -> None:

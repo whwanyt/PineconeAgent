@@ -62,6 +62,9 @@ class SkillResult:
     """播报完是否进入追问窗口。查询类技能一般不需要。"""
     data: dict[str, Any] = field(default_factory=dict)
     """结构化结果，AI 调用工具时会和 reply 一起返回给模型。"""
+    delegate: bool = False
+    """规则已经命中，但技能没有真正处理。路由器在配置了兜底 AI 时不播报 reply，
+    把用户原话交给 AI。没有兜底时仍播报 reply。AI 工具调用不看这个字段，避免来回转交。"""
 
 
 @dataclass

@@ -10,6 +10,10 @@
 为什么不全部交给大模型？
     规则匹配在本地瞬间完成、零费用、断网可用，“几点了”“停止”这类高频指令体验最好；
     大模型负责规则覆盖不到的开放式问题和复杂表达。
+
+技能可以在规则命中后仍表示自己处理不了（``SkillResult.delegate``）。例如本地曲库没有这首歌时，
+不直接对用户说“没找到”，而是把原话交给兜底 AI，由它决定要不要用其他工具。没有配置 AI 时，
+仍播报技能准备好的 reply。
 """
 
 from __future__ import annotations
@@ -44,6 +48,11 @@ class IntentRouter:
             intent.text = text
             logger.info("规则命中：%s.%s %s", skill.name, intent.name, intent.slots or "")
             result = await self._skills.execute(skill, intent)
+            # 技能认领了这句话但处理不了（如本地没有这首歌）。有 AI 时把原话交回去，
+            # 不播报“没找到”，否则用户听不到后续的查找或下载。
+            if result.delegate and self._fallback is not None:
+                logger.info("技能未处理，交给 AI：%s", text)
+                return await self._fallback.handle(text)
             return Reply(text=result.reply, stream=result.stream, follow_up=result.follow_up)
 
         if self._fallback is not None:
