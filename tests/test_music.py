@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,35 @@ async def music(skill_env: SkillEnv, tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert isinstance(skill, MusicSkill)
     yield IntentRouter(skill_env.manager), skill, fake
     await skill_env.manager.unload()
+
+
+def test_prepare_libmpv_search_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS 上把 Homebrew 的 lib 目录加到 dyld 回退路径，且不丢掉原有目录。"""
+    monkeypatch.setattr(player_module.sys, "platform", "darwin")
+    monkeypatch.setattr(player_module.os.path, "isdir", lambda path: path == "/opt/homebrew/lib")
+    # 空字符串会被当成“未设置”，同时让 monkeypatch 在测试结束后恢复原环境。
+    monkeypatch.setenv("DYLD_FALLBACK_LIBRARY_PATH", "")
+
+    player_module._prepare_libmpv_search_path()
+
+    parts = os.environ["DYLD_FALLBACK_LIBRARY_PATH"].split(":")
+    assert parts[0] == "/opt/homebrew/lib"
+    assert "/usr/lib" in parts
+
+    monkeypatch.setenv("DYLD_FALLBACK_LIBRARY_PATH", "/custom/lib")
+    player_module._prepare_libmpv_search_path()
+    assert os.environ["DYLD_FALLBACK_LIBRARY_PATH"].split(":") == [
+        "/opt/homebrew/lib",
+        "/custom/lib",
+    ]
+
+
+def test_prepare_libmpv_search_path_skips_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux 由系统库路径解析 libmpv，不改环境变量。"""
+    monkeypatch.setattr(player_module.sys, "platform", "linux")
+    monkeypatch.delenv("DYLD_FALLBACK_LIBRARY_PATH", raising=False)
+    player_module._prepare_libmpv_search_path()
+    assert "DYLD_FALLBACK_LIBRARY_PATH" not in os.environ
 
 
 def test_clean_query() -> None:
