@@ -14,6 +14,7 @@ from pinecone.core.config import AppConfig  # noqa: E402
 from pinecone.core.events import ChoicesShown, Spoken, Transcribed  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
+from pinecone.tui.logs import LogView  # noqa: E402
 
 
 class FakeDialog:
@@ -125,3 +126,30 @@ async def test_conversation_merges_one_utterance() -> None:
             "|1. 晴天\n2. 稻香",
             "小派|闹钟响了。",
         ]
+
+
+async def test_log_filter_and_toggle() -> None:
+    """F3 只看警告和错误、再按恢复全部，之前的日志不丢；F2 隐藏和显示日志区。"""
+    backend = FakeBackend()
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        log = logging.getLogger("pinecone.test")
+        log.setLevel(logging.INFO)
+        log.info("普通信息")
+        log.warning("有点问题")
+        await pilot.pause()
+        assert any("普通信息" in line for line in lines(app, "#log"))
+
+        # 光标在输入框里时快捷键也要生效
+        await pilot.press("f3")
+        assert any("有点问题" in line for line in lines(app, "#log"))
+        assert not any("普通信息" in line for line in lines(app, "#log"))
+        await pilot.press("f3")
+        assert any("普通信息" in line for line in lines(app, "#log"))
+
+        view = app.query_one(LogView)
+        await pilot.press("f2")
+        assert not view.display
+        await pilot.press("f2")
+        assert view.display

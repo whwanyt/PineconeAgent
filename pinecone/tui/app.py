@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING, Protocol
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Footer, Input, Static
 
 from pinecone.core.events import ChoicesShown, Spoken, Transcribed
 from pinecone.tui.conversation import ConversationView
-from pinecone.tui.logs import TuiLogHandler
+from pinecone.tui.logs import LogView, TuiLogHandler
 
 if TYPE_CHECKING:
     from pinecone.core.bus import EventBus
@@ -59,6 +59,9 @@ class PineconeTui(App[None]):
         border: round $secondary;
         padding: 0 1;
     }
+    #log.hidden {
+        display: none;
+    }
     #status {
         height: 1;
         padding: 0 1;
@@ -68,6 +71,8 @@ class PineconeTui(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "quit", "退出", priority=True),
         Binding("ctrl+q", "quit", "退出", show=False, priority=True),
+        Binding("f2", "toggle_log", "日志"),
+        Binding("f3", "warnings_only", "只看警告"),
     ]
 
     def __init__(self, backend: Backend) -> None:
@@ -80,13 +85,14 @@ class PineconeTui(App[None]):
 
     def compose(self) -> ComposeResult:
         yield ConversationView(self._backend.config.name, id="conversation")
-        yield RichLog(id="log", wrap=True, markup=False, max_lines=2000)
+        yield LogView(id="log")
         yield Static("启动中……", id="status")
         yield Input(placeholder="启动中……", id="prompt", disabled=True)
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#conversation").border_title = "对话"
-        self.query_one("#log").border_title = "日志"
+        self._update_log_title()
         handler = TuiLogHandler(self._write_log, asyncio.get_running_loop())
         handler.setFormatter(logging.Formatter(_LOG_FORMAT, _DATE_FORMAT))
         logging.getLogger().addHandler(handler)
@@ -111,6 +117,17 @@ class PineconeTui(App[None]):
 
     async def action_quit(self) -> None:
         self._backend.stop()
+
+    def action_toggle_log(self) -> None:
+        self.query_one(LogView).toggle_class("hidden")
+
+    def action_warnings_only(self) -> None:
+        self.query_one(LogView).toggle_warnings_only()
+        self._update_log_title()
+
+    def _update_log_title(self) -> None:
+        log = self.query_one(LogView)
+        log.border_title = "日志 · 只看警告和错误" if log.min_level else "日志"
 
     async def _run_backend(self) -> None:
         try:
@@ -147,7 +164,7 @@ class PineconeTui(App[None]):
 
     def _write_log(self, level: int, text: str) -> None:
         try:
-            log = self.query_one("#log", RichLog)
+            log = self.query_one(LogView)
         except NoMatches:  # 界面已经关闭，投递过来的最后几条日志在文件里
             return
-        log.write(text)
+        log.add(level, text)
