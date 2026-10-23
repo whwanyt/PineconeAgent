@@ -44,6 +44,7 @@ import numpy as np
 from pinecone.audio.utils import beep
 from pinecone.core.events import (
     BargeIn,
+    ChoicesShown,
     SpeechEnded,
     SpeechStarted,
     StateChanged,
@@ -86,7 +87,7 @@ class Reply:
     listen_s: float | None = None
     """本轮追问窗口的秒数。为空时用配置里的 ``dialog.follow_up_s``。提问时用更长的等待。"""
     choice_lines: str | None = None
-    """文本模式要打印的编号列表。语音模式只念问句。"""
+    """编号候选列表，以 :class:`ChoicesShown` 事件发出，由文本界面显示。语音模式只念问句。"""
     on_expire: OnExpire | None = None
     """追问窗口超时、用户一直没开口时调用。例如 AI 用它作废没人回答的提问，
     免得之后说的每一句都被当成那次提问的回答。"""
@@ -128,7 +129,6 @@ class DialogController:
         pipeline: SpeechPipeline | None = None,
         asr: SpeechRecognizer | None = None,
         aec_effective: bool = False,
-        show_choices: bool = False,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -139,8 +139,6 @@ class DialogController:
         self._handler = handler
         self._pipeline = pipeline
         self._asr = asr
-        # 文本模式打印候选编号；语音模式只念问句
-        self._show_choices = show_choices
         self._turn = 0
         self._timer: asyncio.TimerHandle | None = None
         self._beep = beep(sample_rate=16000)
@@ -344,8 +342,8 @@ class DialogController:
                 await self._speaker.say(reply.text or "")
         if turn != self._turn:
             return
-        if self._show_choices and reply.choice_lines:
-            print(reply.choice_lines, flush=True)
+        if reply.choice_lines:
+            await self._bus.publish(ChoicesShown(lines=reply.choice_lines))
 
         follow_up_s = (
             reply.listen_s if reply.listen_s is not None else self._config.dialog.follow_up_s

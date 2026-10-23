@@ -72,6 +72,28 @@ class BargeIn(Event):
     source: str
 
 
+# ---- 播报 ----
+
+
+@dataclass(frozen=True, kw_only=True)
+class Spoken(Event):
+    """开始播报一句话（已合成、送入扬声器）。
+
+    ``utterance`` 是本次播报的编号，同一次 ``say`` / ``say_stream`` 的各句相同，
+    界面可以据此把流式回复的多句拼成一条。
+    """
+
+    text: str
+    utterance: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChoicesShown(Event):
+    """回复附带的编号候选列表（语音模式只念问句，文本界面显示这份列表）。"""
+
+    lines: str
+
+
 # ---- 任务管理 ----
 
 

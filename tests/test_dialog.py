@@ -8,6 +8,7 @@ from pinecone.core.bus import EventBus
 from pinecone.core.config import AppConfig
 from pinecone.core.events import (
     BargeIn,
+    ChoicesShown,
     SpeechEnded,
     SpeechStarted,
     StateChanged,
@@ -306,4 +307,19 @@ async def test_turn_cancelled_elsewhere_returns_to_idle() -> None:
     await wait_state(state, S.SPEAKING)
     tasks.cancel_foreground("user")
     await wait_state(state, S.IDLE)
+    await tasks.shutdown()
+
+
+async def test_choices_are_published_after_the_reply() -> None:
+    """回复带候选列表时，念完问句后发布 ChoicesShown，由文本界面显示。"""
+
+    class Asking:
+        async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+            return Reply(text="要听哪一首？", choice_lines="1. 晴天\n2. 稻香")
+
+    bus, state, tasks, speaker, _, dialog = build(handler=Asking())
+    shown: list[str] = []
+    bus.subscribe(ChoicesShown, lambda e: shown.append(e.lines))
+    await dialog.handle_text("放歌")
+    assert speaker.said == ["要听哪一首？"] and shown == ["1. 晴天\n2. 稻香"]
     await tasks.shutdown()

@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from pinecone.audio.output import AudioOutput
+from pinecone.core.bus import EventBus
 from pinecone.core.config import PROJECT_ROOT, AudioConfig, TtsConfig
+from pinecone.core.events import Spoken
 from pinecone.speech.tts.base import Audio, FallbackTTS, TextToSpeech
 from pinecone.speech.tts.speaker import Speaker
 from pinecone.speech.tts.text import SentenceSplitter, clean_for_speech, split_sentences
@@ -118,3 +120,20 @@ async def test_speaker_stream_and_cancel() -> None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled() and not out.is_playing
+
+
+async def test_speaker_publishes_each_sentence() -> None:
+    """每句送入扬声器时发布 Spoken，同一次播报的编号相同，下一次播报换新编号。"""
+    out = AudioOutput(AudioConfig())
+    out.sample_rate = 16000
+    bus = EventBus()
+    spoken: list[Spoken] = []
+    bus.subscribe(Spoken, spoken.append)
+    speaker = Speaker(FakeTTS(), out, bus)
+
+    async with fake_sound_card(out):
+        await asyncio.wait_for(speaker.say("你好。今天不错！"), 2)
+        await asyncio.wait_for(speaker.say("再见。"), 2)
+
+    assert [s.text for s in spoken] == ["你好。", "今天不错！", "再见。"]
+    assert spoken[0].utterance == spoken[1].utterance != spoken[2].utterance

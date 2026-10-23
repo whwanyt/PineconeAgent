@@ -36,6 +36,7 @@ from pinecone.audio.input import AudioInput
 from pinecone.audio.output import AudioOutput
 from pinecone.core.bus import EventBus
 from pinecone.core.config import AppConfig
+from pinecone.core.events import ChoicesShown
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
 from pinecone.dialog import DialogController, EchoHandler
@@ -56,7 +57,7 @@ class App:
         self.state = StateMachine(self.bus)
         self.tasks = TaskManager(self.bus)
         self.output = AudioOutput(config.audio)
-        self.speaker = Speaker(create_tts(config), self.output)
+        self.speaker = Speaker(create_tts(config), self.output, self.bus)
         self.mic: AudioInput | None = None
         self.dialog: DialogController
         self._stop = asyncio.Event()
@@ -106,7 +107,6 @@ class App:
             speaker=self.speaker,
             output=self.output,
             handler=EchoHandler(),
-            show_choices=True,
         )
 
     def _make_skill_context(self, skill_name: str) -> SkillContext:
@@ -221,6 +221,7 @@ class App:
     async def _text_loop(self) -> None:
         """文本模式：从标准输入逐行读取，当作识别结果处理。输入 exit 退出。"""
         print("文本模式：输入一句话后回车（exit 退出）")
+        self.bus.subscribe(ChoicesShown, lambda e: print(e.lines, flush=True))
         while True:
             with contextlib.suppress(EOFError):
                 line = (await asyncio.to_thread(input, "> ")).strip()
