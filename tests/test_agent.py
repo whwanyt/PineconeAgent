@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
+import pytest
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 from pinecone.agent import VoiceAgent
@@ -63,9 +65,16 @@ async def test_stream_and_multi_turn() -> None:
     assert [m.content for m in second_call[1:]] == ["你好", "你好呀，我是小派。", "我刚才说了什么"]
 
 
-async def test_error_yields_apology() -> None:
+async def test_error_yields_apology(caplog: pytest.LogCaptureFixture) -> None:
+    """模型请求失败时向用户道歉，日志只留一行原因，不打堆栈。"""
     agent = VoiceAgent(AppConfig(), ScriptedChatModel.from_script(ConnectionError("断网")))
-    assert "连不上大模型" in await _collect(agent, "你好")
+    with caplog.at_level(logging.WARNING, logger="pinecone.agent.agent"):
+        assert "连不上大模型" in await _collect(agent, "你好")
+    failures = [record for record in caplog.records if record.message.startswith("AI 对话失败")]
+    assert len(failures) == 1
+    assert failures[0].levelno == logging.WARNING
+    assert failures[0].exc_info is None
+    assert "断网" in failures[0].message
 
 
 async def test_repair_interrupted_tool_call() -> None:

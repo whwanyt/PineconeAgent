@@ -290,8 +290,10 @@ class VoiceAgent:
             logger.exception("AI 对话失败")
             if not produced:
                 yield _ERROR_REPLY
-        except Exception:
-            logger.exception("AI 对话失败")
+        except Exception as exc:
+            # 请求失败已经变成给用户的一句道歉。库内部的调用链不再打成整段堆栈。
+            # ``CancelledError`` 不是 ``Exception``，打断时照常取消。
+            logger.warning("AI 对话失败：%s", exc)
             if not produced:
                 yield _ERROR_REPLY
 
