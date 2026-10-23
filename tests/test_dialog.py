@@ -6,7 +6,13 @@ import numpy as np
 
 from pinecone.core.bus import EventBus
 from pinecone.core.config import AppConfig
-from pinecone.core.events import BargeIn, SpeechEnded, SpeechStarted, WakeWordDetected
+from pinecone.core.events import (
+    BargeIn,
+    SpeechEnded,
+    SpeechStarted,
+    StateChanged,
+    WakeWordDetected,
+)
 from pinecone.core.state import AssistantState as S
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskKind, TaskManager
@@ -93,7 +99,7 @@ def build(
         aec_effective=aec,
     )
     dialog.start()
-    return bus, state, tasks, speaker, pipeline
+    return bus, state, tasks, speaker, pipeline, dialog
 
 
 async def wait_state(state: StateMachine, target: S, timeout: float = 1.0) -> None:
@@ -104,7 +110,7 @@ async def wait_state(state: StateMachine, target: S, timeout: float = 1.0) -> No
 
 async def test_full_turn_and_follow_up_timeout() -> None:
     """唤醒 → 聆听 → 思考 → 播报 → 追问窗口 → 超时回到空闲。"""
-    bus, state, _, speaker, pipeline = build()
+    bus, state, _, speaker, pipeline, _ = build()
     await bus.publish(WakeWordDetected(keyword="小派小派"))
     assert state.state == S.LISTENING and pipeline.vad_enabled
 
@@ -117,7 +123,7 @@ async def test_full_turn_and_follow_up_timeout() -> None:
 
 async def test_wake_word_barge_in_keeps_background_tasks() -> None:
     """播报时说唤醒词：播报被取消、进入聆听；后台任务不受影响。"""
-    bus, state, tasks, speaker, pipeline = build(speaker_delay=10)
+    bus, state, tasks, speaker, pipeline, _ = build(speaker_delay=10)
     music = tasks.spawn(asyncio.sleep(10), name="音乐", kind=TaskKind.BACKGROUND)
     barge: list[BargeIn] = []
     bus.subscribe(BargeIn, barge.append)
@@ -138,7 +144,7 @@ async def test_wake_word_barge_in_keeps_background_tasks() -> None:
 async def test_vad_barge_in_requires_aec() -> None:
     """开口打断只在回声消除生效时启用。"""
     for aec, expected in ((False, S.SPEAKING), (True, S.LISTENING)):
-        bus, state, tasks, _, _ = build(speaker_delay=10, vad_barge_in=True, aec=aec)
+        bus, state, tasks, _, _, _ = build(speaker_delay=10, vad_barge_in=True, aec=aec)
         await bus.publish(WakeWordDetected(keyword="小派小派"))
         await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
         await wait_state(state, S.SPEAKING)
@@ -158,7 +164,7 @@ async def test_on_expire_runs_only_when_follow_up_times_out() -> None:
 
             return Reply(text="你要哪一个？", on_expire=expire)
 
-    bus, state, tasks, _, _ = build(handler=Asking())
+    bus, state, tasks, _, _, _ = build(handler=Asking())
     await bus.publish(WakeWordDetected(keyword="小派小派"))
     await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
     await wait_state(state, S.FOLLOW_UP)
@@ -179,7 +185,7 @@ async def _say(bus: EventBus) -> None:
 
 async def test_unheard_speech_keeps_listening() -> None:
     """识别结果为空时回到追问窗口，接着说的话照常处理，不必重新唤醒。"""
-    bus, state, tasks, speaker, pipeline = build(asr_results=[""])
+    bus, state, tasks, speaker, pipeline, _ = build(asr_results=[""])
     await bus.publish(WakeWordDetected(keyword="小派小派"))
     await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
     await wait_state(state, S.FOLLOW_UP)
@@ -202,7 +208,7 @@ async def test_repeated_noise_ends_the_dialog_and_expires() -> None:
 
             return Reply(text="你要哪一个？", listen_s=5, on_expire=expire)
 
-    bus, state, tasks, _, _ = build(handler=Asking(), asr_results=["第二", "", "", ""])
+    bus, state, tasks, _, _, _ = build(handler=Asking(), asr_results=["第二", "", "", ""])
     await bus.publish(WakeWordDetected(keyword="小派小派"))
     await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
     await wait_state(state, S.FOLLOW_UP)
@@ -213,4 +219,43 @@ async def test_repeated_noise_ends_the_dialog_and_expires() -> None:
     await _say(bus)
     await wait_state(state, S.IDLE)
     assert expired == [1]
+    await tasks.shutdown()
+
+
+def _record_states(bus: EventBus) -> list[str]:
+    states: list[str] = []
+    bus.subscribe(StateChanged, lambda e: states.append(e.new))
+    return states
+
+
+async def test_announcement_waits_for_the_reply() -> None:
+    """回复播报中来了闹钟播报：等回复念完再念，状态不会在回复中途切回空闲。"""
+    bus, state, tasks, speaker, _, dialog = build(speaker_delay=0.05)
+    states = _record_states(bus)
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.SPEAKING)
+
+    alarm = tasks.spawn(dialog.speak("闹钟响了"), name="闹钟", kind=TaskKind.BACKGROUND)
+    await alarm.wait()
+    assert speaker.said == ["回复：现在几点", "闹钟响了"]
+    assert states[-4:] == ["speaking", "follow_up", "speaking", "idle"]
+    await tasks.shutdown()
+
+
+async def test_speech_inside_the_turn_is_not_held_back() -> None:
+    """这轮对话里的技能自己播报（例如前台自定义任务）：直接念，不等自己。"""
+    holder: list[DialogController] = []
+
+    class Speaking:
+        async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+            await holder[0].speak("我的IP地址是一二三")
+            return Reply(text="好了", follow_up=False)
+
+    bus, state, tasks, speaker, _, dialog = build(handler=Speaking(), speaker_delay=0.01)
+    holder.append(dialog)
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.IDLE)
+    assert speaker.said == ["我的IP地址是一二三", "好了"]
     await tasks.shutdown()

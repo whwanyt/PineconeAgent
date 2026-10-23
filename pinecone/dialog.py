@@ -12,6 +12,11 @@
     追问窗口内开口    ─▶ LISTENING ...
     识别结果为空      ─▶ FOLLOW_UP（多半是噪音，再等一个窗口；连续几次没听清才回到 IDLE）
 
+主动播报（闹钟、后台任务完成）：
+    这轮对话里自己要说的话（前台自定义任务的 speak 动作、AI 调用的技能）直接念；
+    其他来源要等正在播报的回复念完再开口，不然两段声音叠在一起，
+    先念完的一方还会把状态提前切回 IDLE（音乐恢复音量、唤醒阈值降回去）。
+
 打断（barge-in）：
     THINKING / SPEAKING 时
       - 检测到唤醒词（barge_in.wake_word）；或
@@ -141,6 +146,10 @@ class DialogController:
         # 回复后换成该回复的窗口（例如提问的更长等待）
         self._window: tuple[float, OnExpire | None] = (config.dialog.follow_up_s, None)
         self._unheard = 0
+        # 当前这轮的「对话」任务，用来判断主动播报是不是这轮对话自己说的
+        self._turn_task: RunningTask | None = None
+        # 每次状态变化都会 set，主动播报靠它等回复念完
+        self._state_changed = asyncio.Event()
 
         barge = config.audio.barge_in
         # VAD 打断必须在回声消除生效时才启用，否则扬声器的声音会让音箱自己打断自己
@@ -175,11 +184,18 @@ class DialogController:
     async def speak(self, text: str) -> None:
         """主动播报（闹钟、自定义任务等使用），带状态管理。
 
-        空闲 / 追问 / 播报中时会进入 SPEAKING 并在播完后回到 IDLE；
-        如果用户正在说话或系统正在思考，则只播报不改变状态，避免打乱当前对话。
-        可取消：被取消时立即停止播报。
+        - 在这轮对话里调用（前台自定义任务、AI 调用的技能）：就是这轮要说的话，直接念，不改状态；
+        - 其他来源遇到正在播报的回复：先等它念完，再按下面的规则开口；
+        - 空闲 / 追问时进入 SPEAKING，播完回到 IDLE；
+        - 用户正在说话或系统正在思考时只播报，不改变状态，避免打乱当前对话。
+
+        可取消：等待中或播报中被取消都会立即停止。
         """
-        if self._state.state in (S.IDLE, S.FOLLOW_UP, S.SPEAKING):
+        if self._in_current_turn():
+            await self._speaker.say(text)
+            return
+        await self._wait_while({S.SPEAKING})
+        if self._state.state in (S.IDLE, S.FOLLOW_UP):
             turn = self._next_turn()
             await self._state.transition(S.SPEAKING, "主动播报")
             try:
@@ -206,6 +222,7 @@ class DialogController:
         await self._state.transition(S.THINKING, "文本输入")
         await self._bus.publish(Transcribed(text=text))
         rt = self._tasks.spawn(self._respond(text, turn), name="对话", source="dialog")
+        self._turn_task = rt
         await rt.wait()
 
     # ================================================================== 事件处理
@@ -253,10 +270,13 @@ class DialogController:
         self._cancel_timer()
         turn = self._turn
         await self._state.transition(S.THINKING, "说完")
-        self._tasks.spawn(self._process_audio(event.audio, turn), name="对话", source="dialog")
+        self._turn_task = self._tasks.spawn(
+            self._process_audio(event.audio, turn), name="对话", source="dialog"
+        )
 
     async def _on_state_changed(self, event: StateChanged) -> None:
         """根据状态调整前端：VAD 开关、唤醒阈值。"""
+        self._state_changed.set()
         if self._pipeline is None:
             return
         new = S(event.new)
@@ -337,6 +357,18 @@ class DialogController:
             return
         await self._state.transition(S.FOLLOW_UP, "没听清，继续等")
         self._arm_timer(seconds, lambda: self._on_follow_up_timeout(turn, on_expire))
+
+    def _in_current_turn(self) -> bool:
+        """调用方是否运行在当前这轮「对话」任务里（含 AI 工具启动的技能子任务）。"""
+        rt = self._turn_task
+        return rt is not None and not rt.done and self._tasks.within(rt)
+
+    async def _wait_while(self, states: set[S]) -> None:
+        """等到状态离开 ``states``。可取消。"""
+        while self._state.state in states:
+            # 先 clear 再 wait：多个播报同时在等时，各自都会重新检查状态，不会空转
+            self._state_changed.clear()
+            await self._state_changed.wait()
 
     # ================================================================== 超时
 
