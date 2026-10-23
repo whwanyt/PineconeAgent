@@ -273,3 +273,37 @@ async def test_announcement_waits_while_the_user_is_talking() -> None:
     await alarm.wait()
     assert speaker.said == ["回复：现在几点", "闹钟响了"]
     await tasks.shutdown()
+
+
+async def test_failed_turn_returns_to_idle() -> None:
+    """识别或播放出错时复位到空闲，不卡在思考 / 播报中。"""
+
+    class BrokenAsr:
+        async def transcribe(self, audio) -> str:
+            raise RuntimeError("识别模型崩了")
+
+    class BrokenSpeaker(FakeSpeaker):
+        async def say(self, text: str) -> str:
+            raise RuntimeError("声卡掉线")
+
+    for broken in ("asr", "speaker"):
+        bus, state, tasks, _, _, dialog = build()
+        if broken == "asr":
+            dialog._asr = BrokenAsr()  # type: ignore[assignment]
+        else:
+            dialog._speaker = BrokenSpeaker()  # type: ignore[assignment]
+        await bus.publish(WakeWordDetected(keyword="小派小派"))
+        await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+        await wait_state(state, S.IDLE)
+        await tasks.shutdown()
+
+
+async def test_turn_cancelled_elsewhere_returns_to_idle() -> None:
+    """「对话」任务被别处取消（不是打断，轮次没变）时也复位到空闲。"""
+    bus, state, tasks, _, _, _ = build(speaker_delay=10)
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.SPEAKING)
+    tasks.cancel_foreground("user")
+    await wait_state(state, S.IDLE)
+    await tasks.shutdown()

@@ -218,7 +218,9 @@ class DialogController:
             await self._state.transition(S.LISTENING, "文本输入")
         await self._state.transition(S.THINKING, "文本输入")
         await self._bus.publish(Transcribed(text=text))
-        rt = self._tasks.spawn(self._respond(text, turn), name="对话", source="dialog")
+        rt = self._tasks.spawn(
+            self._run_turn(self._respond(text, turn), turn), name="对话", source="dialog"
+        )
         self._turn_task = rt
         await rt.wait()
 
@@ -268,7 +270,9 @@ class DialogController:
         turn = self._turn
         await self._state.transition(S.THINKING, "说完")
         self._turn_task = self._tasks.spawn(
-            self._process_audio(event.audio, turn), name="对话", source="dialog"
+            self._run_turn(self._process_audio(event.audio, turn), turn),
+            name="对话",
+            source="dialog",
         )
 
     async def _on_state_changed(self, event: StateChanged) -> None:
@@ -293,6 +297,19 @@ class DialogController:
             self._pipeline.set_vad_enabled(False)
 
     # ================================================================== 对话流程
+
+    async def _run_turn(self, body: Awaitable[None], turn: int) -> None:
+        """运行一轮对话（「对话」托管任务的入口），结束时兜底复位状态。
+
+        正常结束时已经在追问窗口或空闲；被打断时轮次已经变了，新一轮自己管状态。
+        剩下的情况是识别或播放出错，或者被别处取消。这时状态会停在思考或播报中，
+        音乐一直压低，主动播报也一直在等，所以要复位到空闲。异常仍向上抛，由 TaskManager 记日志。
+        """
+        try:
+            await body
+        finally:
+            if turn == self._turn and self._state.state in (S.THINKING, S.SPEAKING):
+                await self._state.transition(S.IDLE, "对话异常结束")
 
     async def _process_audio(self, audio: np.ndarray, turn: int) -> None:
         """识别一句话并回复（运行在托管任务「对话」中）。"""
