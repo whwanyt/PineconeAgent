@@ -256,3 +256,27 @@ def test_native_output_goes_to_log(caplog: pytest.LogCaptureFixture) -> None:
         "Unknown token: shei2",
         "from stdout",
     ]
+
+
+@pytest.mark.skipif(
+    not hasattr(asyncio, "eager_task_factory"), reason="Python 3.12 才有 eager 任务"
+)
+async def test_backend_tasks_are_not_eager(tmp_path: Path) -> None:
+    """run_async 会把事件循环换成 eager 任务；界面换回默认，很快结束的任务照样从列表里清掉。"""
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)  # 和 Textual 的 run_async 一样
+    try:
+        backend = FakeBackend(tmp_path)
+        app = PineconeTui(backend)
+        async with app.run_test() as pilot:
+            await backend.ready.wait()
+            await pilot.pause()
+            assert loop.get_task_factory() is None
+
+            async def quick() -> str:
+                return "现在是上午11点"
+
+            rt = await backend.tasks.run(quick(), name="查询时间和日期", source="skill:clock")
+            assert rt.result == "现在是上午11点" and backend.tasks.list() == []
+    finally:
+        loop.set_task_factory(None)

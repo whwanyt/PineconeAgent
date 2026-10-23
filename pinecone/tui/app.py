@@ -104,6 +104,10 @@ class PineconeTui(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Textual 在 Python 3.12+ 上把整个事件循环换成 eager 任务：create_task 当场就开始跑。
+        # 后端和界面共用这个循环，TaskManager 等处都按“create_task 之后才开始跑”写的，
+        # 很快结束的任务会来不及登记、永远留在任务列表里。换回默认，和树莓派（3.11）上一致
+        asyncio.get_running_loop().set_task_factory(None)
         self.query_one("#conversation").border_title = "对话"
         self._update_log_title()
         handler = TuiLogHandler(self._write_log, asyncio.get_running_loop())
