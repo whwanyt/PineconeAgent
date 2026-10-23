@@ -14,6 +14,10 @@
 技能可以在规则命中后仍表示自己处理不了（``SkillResult.delegate``）。例如本地曲库没有这首歌时，
 不直接对用户说“没找到”，而是把原话和 ``hint``（情况说明）交给兜底 AI，由模型先开口、
 再决定要不要用其他工具。没有配置 AI 时，仍播报技能准备好的 reply。
+
+AI 正在等用户回答提问（``ask_user``）时，这句原话默认交给 AI，连“就听现场版”这种
+会被音乐规则抢走的话也一样。例外是没在回答、却命中了高优先级规则（“停止”、自定义任务）的话：
+提问作废，按规则处理，本地指令不必联网、也不会被模型误解成选项。
 """
 
 from __future__ import annotations
@@ -22,11 +26,14 @@ import logging
 
 from pinecone.dialog import DialogHandler, Reply
 from pinecone.nlu.matcher import normalize
+from pinecone.skills.base import Intent, Skill
 from pinecone.skills.registry import SkillManager
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_UNKNOWN = "抱歉，我还不会这个。"
+_PREEMPT_PRIORITY = 90
+"""有未回答的提问时，优先级不低于这个数的规则仍然先处理（task_control、custom_task）。"""
 
 
 class IntentRouter:
@@ -47,11 +54,11 @@ class IntentRouter:
             text: 用户原话。
             hint: 上层传入的情况说明；规则未命中时原样交给兜底 AI。
         """
-        pending_reply = await self._answer_pending(text)
-        if pending_reply is not None:
-            return pending_reply
-
         hit = self._skills.match(normalize(text))
+        if self._fallback is not None and await self._answers_question(text, hit):
+            logger.info("回答提问：%s", text)
+            return await self._fallback.handle(text)
+
         if hit is not None:
             skill, intent = hit
             intent.text = text
@@ -69,14 +76,20 @@ class IntentRouter:
             return await self._fallback.handle(text, hint=hint)
         return Reply(text=_DEFAULT_UNKNOWN, follow_up=False)
 
-    async def _answer_pending(self, text: str) -> Reply | None:
-        """有未完成的提问时，把这句原话交给模型，不按技能规则抢走。"""
+    async def _answers_question(self, text: str, hit: tuple[Skill, Intent] | None) -> bool:
+        """有未回答的提问时，判断这句是否交给 AI 当作回答。
+
+        高优先级规则命中、又不像在回答时返回 False，并作废这次提问。
+        """
         agent = self._fallback
         pending_of = getattr(agent, "pending_question", None)
         if pending_of is None:
-            return None
+            return False
         pending = await pending_of()
         if pending is None:
-            return None
-        logger.info("回答提问：%s", text)
-        return await agent.handle(text)
+            return False
+        if hit is None or hit[0].priority < _PREEMPT_PRIORITY or pending.is_answer(text):
+            return True
+        logger.info("没有回答提问，改由技能 %s 处理：%s", hit[0].name, text)
+        await agent.abandon_question()
+        return False

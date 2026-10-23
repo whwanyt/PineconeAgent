@@ -59,7 +59,13 @@ class Handler:
         return Reply(text=f"回复：{text}")
 
 
-def build(*, speaker_delay: float = 0.0, vad_barge_in: bool = False, aec: bool = False):
+def build(
+    *,
+    speaker_delay: float = 0.0,
+    vad_barge_in: bool = False,
+    aec: bool = False,
+    handler: object | None = None,
+):
     cfg = AppConfig()
     cfg.dialog.wake_beep = False
     cfg.dialog.follow_up_s = 0.1
@@ -77,7 +83,7 @@ def build(*, speaker_delay: float = 0.0, vad_barge_in: bool = False, aec: bool =
         tasks=tasks,
         speaker=speaker,  # type: ignore[arg-type]
         output=FakeOutput(),  # type: ignore[arg-type]
-        handler=Handler(),
+        handler=handler or Handler(),  # type: ignore[arg-type]
         pipeline=pipeline,  # type: ignore[arg-type]
         asr=FakeAsr(),  # type: ignore[arg-type]
         aec_effective=aec,
@@ -135,3 +141,27 @@ async def test_vad_barge_in_requires_aec() -> None:
         await bus.publish(SpeechStarted())
         assert state.state == expected
         await tasks.shutdown()
+
+
+async def test_on_expire_runs_only_when_follow_up_times_out() -> None:
+    """追问窗口超时才调用 on_expire；窗口内开口则不调用。"""
+    expired: list[str] = []
+
+    class Asking:
+        async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+            async def expire() -> None:
+                expired.append(text)
+
+            return Reply(text="你要哪一个？", on_expire=expire)
+
+    bus, state, tasks, _, _ = build(handler=Asking())
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.FOLLOW_UP)
+    await bus.publish(SpeechStarted())
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.FOLLOW_UP)
+    await wait_state(state, S.IDLE)
+    await asyncio.sleep(0.01)
+    assert expired == ["现在几点"]
+    await tasks.shutdown()

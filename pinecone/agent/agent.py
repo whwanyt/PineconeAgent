@@ -14,9 +14,10 @@
 
 模型提问：
     只有模型调用 ``ask_user`` 时才会 ``interrupt``。流结束后如果检查点上还有未回答的提问，
-    把问句接在模型已经说出的话后面。下一句能解析成选项或取消时，用
-    ``Command(resume=用户原话)`` 沿用同一个 thread_id 继续。
-    已经暂停的提问不能补假的工具结果，否则无法恢复。
+    把问句接在模型已经说出的话后面。下一句用 ``Command(resume=用户原话)`` 沿用同一个
+    thread_id 继续。正在等回答的提问不能补假的工具结果，否则无法恢复。
+    提问不会一直挂着：追问窗口超时（``Reply.on_expire``）或会话空闲超时后作废，
+    作废时给 ``ask_user`` 补一条“没有回答”的结果，会话历史保持合法。
 
 打断与取消：
     整个流运行在「对话」托管任务中。被唤醒词打断或说“停止”时，任务被取消，
@@ -63,6 +64,8 @@ from .prompts import build_system_prompt
 logger = logging.getLogger(__name__)
 
 _ERROR_REPLY = "抱歉，我现在连不上大模型，请稍后再试。"
+_INTERRUPTED = "已被用户打断取消"
+_UNANSWERED = "用户没有回答，这次提问已作废。不要继续这项操作，除非用户重新提出。"
 
 
 @dataclass
@@ -86,6 +89,12 @@ class Session:
     def current(self) -> str:
         """当前 thread_id。还没有会话时为空字符串，不会因此新建。"""
         return self._thread_id
+
+    def active(self) -> str:
+        """还没有空闲超时的 thread_id。没有会话或已经超时时为空字符串，不会因此新建。"""
+        if self._thread_id and time.time() - self._last_active <= self._idle_s:
+            return self._thread_id
+        return ""
 
     def thread_id(self) -> str:
         """当前会话 id；空闲超时则开启新会话。"""
@@ -186,8 +195,12 @@ class VoiceAgent:
         return reply
 
     async def pending_question(self) -> PendingQuestion | None:
-        """当前会话里还没回答的提问。没有会话或已经回答过时返回 None。"""
-        thread = self.session.current()
+        """当前会话里还没回答的提问。
+
+        没有会话、会话已经空闲超时或已经回答过时返回 None。空闲超时后下一句会开新会话，
+        旧会话里的提问留在检查点里，不再恢复。
+        """
+        thread = self.session.active()
         if not thread:
             return None
         state = await self._graph.aget_state({"configurable": {"thread_id": thread}})
@@ -199,15 +212,24 @@ class VoiceAgent:
                 return pending
         return None
 
-    def drop_pending(self) -> None:
-        """放弃未完成的提问并换一个新会话。旧检查点留在库里，不再恢复。"""
-        self.session.reset()
+    async def abandon_question(self) -> None:
+        """作废还没回答的提问，会话和上下文保留。没有提问时什么都不做。
+
+        给 ``ask_user`` 补一条“没有回答”的工具结果，图就不再停在提问上，
+        下一句照常作为新的用户消息处理。
+        """
+        if await self.pending_question() is None:
+            return
+        config = {"configurable": {"thread_id": self.session.current()}}
+        logger.info("提问没有回答，作废")
+        await self._answer_missing_tool_calls(config, _UNANSWERED, as_node="tools")
 
     def _mark_question(self, reply: Reply, pending: PendingQuestion) -> None:
-        """让对话层用更长的追问窗口，并在文本模式打印编号。"""
+        """让对话层用更长的追问窗口，并在文本模式打印编号。窗口超时后作废这次提问。"""
         reply.follow_up = True
         reply.listen_s = self._config.agent.choice_timeout_s
         reply.choice_lines = pending.lines
+        reply.on_expire = self.abandon_question
 
     async def _run_config(self) -> dict[str, Any]:
         """本轮使用的 thread 配置。有提问时不因空闲超时换会话。"""
@@ -288,23 +310,27 @@ class VoiceAgent:
             for item in state.interrupts
         ):
             return
+        # 没有工具时图里不存在 tools 节点，以 model 节点的名义写入即可
+        await self._answer_missing_tool_calls(config, _INTERRUPTED, as_node="model")
+
+    async def _answer_missing_tool_calls(
+        self, config: dict[str, Any], content: str, *, as_node: str
+    ) -> None:
+        """给最后一条 AI 消息里还没有结果的工具调用补上 ``content``。"""
+        state = await self._graph.aget_state(config)
         messages = state.values.get("messages", []) if state and state.values else []
         if not messages:
             return
         answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
         last = messages[-1]
-        if isinstance(last, AIMessage) and last.tool_calls:
-            missing = [c for c in last.tool_calls if c["id"] not in answered]
-            if missing:
-                logger.info("补全被打断的工具调用：%s", [c["name"] for c in missing])
-                await self._graph.aupdate_state(
-                    config,
-                    {
-                        "messages": [
-                            ToolMessage(content="已被用户打断取消", tool_call_id=c["id"])
-                            for c in missing
-                        ]
-                    },
-                    # 没有工具时图里不存在 tools 节点，以 model 节点的名义写入即可
-                    as_node="model",
-                )
+        if not isinstance(last, AIMessage) or not last.tool_calls:
+            return
+        missing = [c for c in last.tool_calls if c["id"] not in answered]
+        if not missing:
+            return
+        logger.info("补全没有结果的工具调用：%s", [c["name"] for c in missing])
+        await self._graph.aupdate_state(
+            config,
+            {"messages": [ToolMessage(content=content, tool_call_id=c["id"]) for c in missing]},
+            as_node=as_node,
+        )

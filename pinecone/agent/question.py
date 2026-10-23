@@ -66,6 +66,10 @@ class PendingQuestion:
     choices: list[Choice]
     limit: int
 
+    def is_answer(self, text: str) -> bool:
+        """这句是否明确在回答本次提问：说了第几个、选项名，或者取消。"""
+        return parse_answer(text, self.choices, limit=self.limit).kind is not AnswerKind.UNCLEAR
+
 
 def spoken_question(
     choices: Sequence[Choice],

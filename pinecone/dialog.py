@@ -74,6 +74,9 @@ class Reply:
     """本轮追问窗口的秒数。为空时用配置里的 ``dialog.follow_up_s``。提问时用更长的等待。"""
     choice_lines: str | None = None
     """文本模式要打印的编号列表。语音模式只念问句。"""
+    on_expire: Callable[[], Awaitable[None]] | None = None
+    """追问窗口超时、用户一直没开口时调用。例如 AI 用它作废没人回答的提问，
+    免得之后说的每一句都被当成那次提问的回答。"""
 
 
 class DialogHandler(Protocol):
@@ -302,7 +305,7 @@ class DialogController:
         )
         if reply.follow_up and follow_up_s > 0:
             await self._state.transition(S.FOLLOW_UP, "等待追问")
-            self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn))
+            self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn, reply.on_expire))
         else:
             await self._state.transition(S.IDLE, "对话结束")
 
@@ -312,9 +315,18 @@ class DialogController:
         if turn == self._turn and self._state.state == S.LISTENING:
             await self._state.transition(S.IDLE, "没有说话")
 
-    async def _on_follow_up_timeout(self, turn: int) -> None:
-        if turn == self._turn and self._state.state == S.FOLLOW_UP:
-            await self._state.transition(S.IDLE, "追问超时")
+    async def _on_follow_up_timeout(
+        self, turn: int, on_expire: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
+        if turn != self._turn or self._state.state != S.FOLLOW_UP:
+            return
+        await self._state.transition(S.IDLE, "追问超时")
+        if on_expire is None:
+            return
+        try:
+            await on_expire()
+        except Exception:
+            logger.exception("追问超时的清理失败")
 
     def _arm_timer(self, delay: float, callback: Callable[[], Awaitable[None]]) -> None:
         """设置（替换）唯一的超时定时器。"""

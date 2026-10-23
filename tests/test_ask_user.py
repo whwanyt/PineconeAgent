@@ -121,3 +121,44 @@ async def test_many_results_do_not_pause_unless_model_asks() -> None:
     assert "ask_user" not in {
         message.name for message in model.received[-1] if isinstance(message, ToolMessage)
     }
+
+
+async def test_abandoned_question_lets_the_next_turn_start_fresh() -> None:
+    """提问作废后不再暂停，下一句作为新的用户消息处理，会话上下文保留。"""
+    model = ScriptedChatModel.from_script(_ask_call(), "现在三点。")
+    agent = VoiceAgent(AppConfig(), model)
+    await _spoken(agent, "播放宝船")
+    thread = agent.session.current()
+
+    await agent.abandon_question()
+    assert await agent.pending_question() is None
+    assert await _spoken(agent, "几点了") == "现在三点。"
+    assert agent.session.current() == thread
+    tool_msg = next(message for message in model.received[-1] if isinstance(message, ToolMessage))
+    assert "提问已作废" in tool_msg.content
+    assert model.received[-1][-1].content == "几点了"
+
+
+async def test_question_expires_with_the_session() -> None:
+    """会话空闲超时后，旧提问不再接走下一句。"""
+    model = ScriptedChatModel.from_script(_ask_call(), "现在三点。")
+    agent = VoiceAgent(AppConfig(), model)
+    await _spoken(agent, "播放宝船")
+    agent.session._last_active -= agent.session._idle_s + 1
+
+    assert await agent.pending_question() is None
+    assert await _spoken(agent, "几点了") == "现在三点。"
+    assert not any(isinstance(message, ToolMessage) for message in model.received[-1])
+
+
+async def test_question_reply_expires_when_follow_up_times_out() -> None:
+    """提问的回复带上 on_expire，追问窗口超时后由对话层调用。"""
+    model = ScriptedChatModel.from_script(_ask_call())
+    agent = VoiceAgent(AppConfig(), model)
+    reply = await agent.handle("播放宝船")
+    assert reply.stream is not None
+    _ = [piece async for piece in reply.stream]
+    assert reply.on_expire is not None
+
+    await reply.on_expire()
+    assert await agent.pending_question() is None
