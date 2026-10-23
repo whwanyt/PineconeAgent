@@ -2,6 +2,7 @@
 
 统一格式：``时间 级别 [模块] 消息``。同时输出到控制台和滚动日志文件，
 在树莓派上用 systemd 运行时，控制台输出会进入 journald（``journalctl -u pinecone``）。
+文本界面占用整个终端，此时关掉控制台输出，由界面自己挂 handler 显示日志。
 """
 
 from __future__ import annotations
@@ -18,13 +19,14 @@ _DATE_FORMAT = "%H:%M:%S"
 _NOISY_LOGGERS = ("httpx", "httpcore", "apscheduler", "openai", "asyncio", "aiosqlite")
 
 
-def setup_logging(config: AppConfig) -> None:
+def setup_logging(config: AppConfig, *, console: bool = True) -> None:
     """根据配置初始化根日志器。
 
     可以重复调用（例如测试中），每次调用都会先清空已有 handler，避免日志重复输出。
 
     Args:
         config: 应用配置，使用其中的 ``log`` 段。
+        console: 是否输出到控制台。全屏文本界面运行时关闭，避免日志写乱界面。
     """
     log_cfg = config.log
     root = logging.getLogger()
@@ -34,9 +36,10 @@ def setup_logging(config: AppConfig) -> None:
 
     formatter = logging.Formatter(_FORMAT, _DATE_FORMAT)
 
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    root.addHandler(console)
+    if console:
+        stream = logging.StreamHandler()
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
 
     if log_cfg.file:
         log_path = config.resolve_path(log_cfg.file)
