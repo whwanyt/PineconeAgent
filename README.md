@@ -104,18 +104,33 @@ audio:
 ## 开发环境（Mac / Linux 电脑）
 
 ```bash
-uv sync --extra dev --extra aec       # 安装依赖
+uv sync --extra dev --extra aec --extra tui   # 安装依赖（tui：文本模式的全屏界面）
 bash scripts/download_models.sh        # 下载语音模型
 uv run pytest                          # 运行测试
 uv run ruff check . && uv run ruff format .
 
 # 文本模式：终端输入代替说话，回复仍从扬声器播报，适合调试技能和 AI
 OPENAI_API_KEY=sk-xxx uv run python -m pinecone.main --text
+# 文本模式不用全屏界面，逐行读标准输入（也可以用管道喂指令）
+uv run python -m pinecone.main --text --plain
 # 语音模式
 uv run python -m pinecone.main --debug
 ```
 
 音乐技能需要 libmpv：macOS `brew install mpv`，树莓派由安装脚本处理。
+
+文本模式默认是全屏界面：上面是对话区（你说的话、音箱念的话、候选列表），中间是日志区，
+底部是状态栏（当前状态、追问倒计时、正在运行的任务）和输入框，日志不会再插进正在输入的那一行。
+思考或播报中接着输入会像语音一样打断。没装 `tui` 依赖或输入不是终端时自动退回逐行输入。
+
+| 按键 | 作用 |
+| --- | --- |
+| ↑ / ↓ | 翻之前说过的话（保存在 `data/tui_history.txt`） |
+| Esc | 打断正在思考或播报的这一轮，后台任务不受影响 |
+| F2 | 隐藏 / 显示日志区 |
+| F3 | 只看警告和错误 / 恢复全部 |
+| Ctrl+L | 清空对话区和日志区 |
+| Ctrl+C | 退出（也可以输入 `exit`） |
 
 ## 配置
 
@@ -239,6 +254,7 @@ pinecone/
   skills/                技能框架 + 内置技能（builtin/）+ 模板（_template/）
   tasks/                 自定义任务引擎（加载、动作注册表、执行器）
   agent/                 AI Agent：模型、提示词、记忆（memory/）、工具（tools/）
+  tui/                   文本模式的全屏界面（Textual）：对话区、日志区、状态栏、输入框
 tests/         单元测试（pytest，假模型 / 假声卡，不需要硬件和网络）
 ```
 
