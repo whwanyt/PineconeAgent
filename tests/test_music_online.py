@@ -12,6 +12,7 @@ from pinecone.skills.builtin.music.online import (
     SongArg,
     UrlResolver,
     parse_audio_url,
+    preload_url,
     song_payload,
     songs_from_result,
     track_from_song,
@@ -56,19 +57,22 @@ def test_track_from_song_accepts_model_and_dict() -> None:
 
 
 def test_track_from_song_keeps_http_uri() -> None:
-    """结果里已经带了可播放地址时，曲目可以直接播，歌曲信息仍留着。"""
-    track = track_from_song(
-        {
-            "id": "9",
-            "source": "netease",
-            "name": "九万字",
-            "uri": "https://example.com/a.mp3",
-        }
-    )
+    """有歌曲身份时地址不写进曲目；只有地址时直接播放。"""
+    item = {
+        "id": "9",
+        "source": "netease",
+        "name": "九万字",
+        "uri": "https://example.com/a.mp3",
+    }
+    track = track_from_song(item)
     assert track is not None
-    assert track.uri == "https://example.com/a.mp3"
+    assert track.uri == ""
+    assert track.online
     assert track.song_info()["id"] == "9"
-    assert "uri" not in track.song_info()
+    assert preload_url(item) == "https://example.com/a.mp3"
+
+    bare = track_from_song({"name": "甲", "uri": "https://example.com/a.mp3"})
+    assert bare is not None and bare.uri == "https://example.com/a.mp3"
 
 
 @pytest.mark.parametrize(

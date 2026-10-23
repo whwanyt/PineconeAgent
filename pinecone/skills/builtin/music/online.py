@@ -84,7 +84,8 @@ def track_from_song(item: SongArg | dict[str, Any]) -> Track | None:
     """把工具参数里的一首歌变成曲目。
 
     既接受 pydantic 对象，也接受字典。音乐框架会把嵌套参数按模型传进来。
-    带 http(s) 地址时曲目可以直接播，歌曲信息仍保留下来，方便地址过期后重取。
+    有来源和 id 时不把 http 地址写进曲目，调用方用 :func:`preload_url` 放进缓存。
+    只有地址、没有歌曲身份时，地址就留在曲目上直接播放。
     """
     try:
         song = item if isinstance(item, SongArg) else SongArg.model_validate(item)
@@ -94,17 +95,34 @@ def track_from_song(item: SongArg | dict[str, Any]) -> Track | None:
     payload = song_payload(song)
     stored = json.dumps(payload, ensure_ascii=False) if payload else ""
     uri = song.uri.strip()
-    playable = uri if _is_http(uri) or _is_local(uri) else ""
-    title = song.name or _title_from_uri(playable)
-    if not stored and not playable:
+    http_url = uri if _is_http(uri) else ""
+    local = uri if _is_local(uri) else ""
+    title = song.name or _title_from_uri(local or http_url) or "在线音乐"
+    if stored:
+        playable = local
+    elif local or http_url:
+        playable = local or http_url
+    else:
         return None
     return Track(
-        title=title or "在线音乐",
+        title=title,
         uri=playable,
         search_key=search_key(f"{song.artist}{title}"),
         artist=song.artist,
         song=stored,
     )
+
+
+def preload_url(item: SongArg | dict[str, Any]) -> str:
+    """歌曲对象里可先缓存的 http(s) 地址。没有歌曲身份时返回空。"""
+    try:
+        song = item if isinstance(item, SongArg) else SongArg.model_validate(item)
+    except ValidationError:
+        return ""
+    uri = song.uri.strip()
+    if song_payload(song) and _is_http(uri):
+        return uri
+    return ""
 
 
 def songs_from_result(text: str) -> list[dict[str, Any]]:
