@@ -64,6 +64,10 @@ class LogView(RichLog):
         if level >= self.min_level:
             self._write(level, text)
 
+    def clear_records(self) -> None:
+        self._records.clear()
+        self.clear()
+
     def toggle_warnings_only(self) -> None:
         self.min_level = logging.NOTSET if self.min_level else logging.WARNING
         self.clear()

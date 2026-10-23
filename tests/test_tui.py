@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ from pinecone.core.task_manager import TaskKind, TaskManager  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
 from pinecone.tui.logs import LogView  # noqa: E402
+from pinecone.tui.prompt import PromptInput  # noqa: E402
 from pinecone.tui.status import StatusBar  # noqa: E402
 
 
@@ -26,6 +28,11 @@ class FakeDialog:
         self.bus = bus
         self.texts: list[str] = []
         self.timer_remaining: float | None = None
+        self.interrupted = 0
+
+    async def interrupt(self, reason: str = "user") -> int:
+        self.interrupted += 1
+        return 0
 
     async def handle_text(self, text: str) -> None:
         self.texts.append(text)
@@ -35,8 +42,8 @@ class FakeDialog:
 class FakeBackend:
     """按 pinecone.app.App 的接口：run 启动并等到 stop，启动完成时 set ready。"""
 
-    def __init__(self) -> None:
-        self.config = AppConfig()
+    def __init__(self, data_dir: Path) -> None:
+        self.config = AppConfig(data_dir=str(data_dir))
         self.bus = EventBus()
         self.state = StateMachine(self.bus)
         self.tasks = TaskManager(self.bus)
@@ -70,9 +77,9 @@ async def submit(pilot, text: str) -> None:
     await pilot.pause()
 
 
-async def test_input_goes_to_dialog_and_logs_stay_apart() -> None:
+async def test_input_goes_to_dialog_and_logs_stay_apart(tmp_path: Path) -> None:
     """输入框启动后可用；回车交给对话控制器；日志显示在日志区，不进对话区。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -89,9 +96,9 @@ async def test_input_goes_to_dialog_and_logs_stay_apart() -> None:
         assert not any("技能加载慢" in line for line in lines(app, "#conversation"))
 
 
-async def test_quit_waits_for_backend_shutdown() -> None:
+async def test_quit_waits_for_backend_shutdown(tmp_path: Path) -> None:
     """Ctrl+C 只请求后端停止，后端关完再退出界面；退出后不再接管日志。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -102,9 +109,9 @@ async def test_quit_waits_for_backend_shutdown() -> None:
     assert not any(type(h).__name__ == "TuiLogHandler" for h in root.handlers)
 
 
-async def test_exit_command_stops_backend() -> None:
+async def test_exit_command_stops_backend(tmp_path: Path) -> None:
     """输入 exit 与 Ctrl+C 一样退出，不交给对话控制器。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -114,9 +121,9 @@ async def test_exit_command_stops_backend() -> None:
     assert backend.dialog.texts == []
 
 
-async def test_conversation_merges_one_utterance() -> None:
+async def test_conversation_merges_one_utterance(tmp_path: Path) -> None:
     """同一次播报的句子拼成一条；新的播报、候选列表各占一条；用户的话以识别结果为准。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -135,9 +142,9 @@ async def test_conversation_merges_one_utterance() -> None:
         ]
 
 
-async def test_log_filter_and_toggle() -> None:
+async def test_log_filter_and_toggle(tmp_path: Path) -> None:
     """F3 只看警告和错误、再按恢复全部，之前的日志不丢；F2 隐藏和显示日志区。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -162,9 +169,9 @@ async def test_log_filter_and_toggle() -> None:
         assert view.display
 
 
-async def test_status_bar_shows_state_countdown_and_tasks() -> None:
+async def test_status_bar_shows_state_countdown_and_tasks(tmp_path: Path) -> None:
     """状态栏显示当前状态、追问倒计时和技能任务，不列对话流程自己的任务。"""
-    backend = FakeBackend()
+    backend = FakeBackend(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -188,3 +195,47 @@ async def test_status_bar_shows_state_countdown_and_tasks() -> None:
         backend.dialog.timer_remaining = 7.6
         assert "等待追问" in text() and "8s" in text()
         await backend.tasks.shutdown()
+
+
+async def test_history_survives_restart(tmp_path: Path) -> None:
+    """↑↓ 翻历史，翻回来恢复正在输入的内容；历史存在数据目录，重启后还在。"""
+    backend = FakeBackend(tmp_path)
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        await submit(pilot, "现在几点")
+        await submit(pilot, "明天天气")
+        await submit(pilot, "明天天气")
+        prompt = app.query_one(PromptInput)
+        prompt.value = "打到一半"
+        await pilot.press("up")
+        assert prompt.value == "明天天气"
+        await pilot.press("up", "up")
+        assert prompt.value == "现在几点"
+        await pilot.press("down", "down")
+        assert prompt.value == "打到一半"
+
+    backend = FakeBackend(tmp_path)
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        await pilot.press("up")
+        assert app.query_one(PromptInput).value == "明天天气"
+
+
+async def test_escape_interrupts_and_ctrl_l_clears(tmp_path: Path) -> None:
+    """Esc 打断这一轮；Ctrl+L 清空对话区和日志区。"""
+    backend = FakeBackend(tmp_path)
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        await submit(pilot, "讲个长故事")
+        await pilot.press("escape")
+        assert backend.dialog.interrupted == 1
+
+        await pilot.press("ctrl+l")
+        await pilot.pause()
+        assert lines(app, "#conversation") == [] and lines(app, "#log") == []

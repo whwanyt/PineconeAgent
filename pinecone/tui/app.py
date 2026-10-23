@@ -15,6 +15,7 @@ from textual.widgets import Footer, Input
 from pinecone.core.events import ChoicesShown, Spoken, Transcribed
 from pinecone.tui.conversation import ConversationView
 from pinecone.tui.logs import LogView, TuiLogHandler
+from pinecone.tui.prompt import PromptInput
 from pinecone.tui.status import StatusBar
 
 if TYPE_CHECKING:
@@ -76,6 +77,8 @@ class PineconeTui(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "quit", "退出", priority=True),
         Binding("ctrl+q", "quit", "退出", show=False, priority=True),
+        Binding("escape", "interrupt", "打断", priority=True),
+        Binding("ctrl+l", "clear", "清屏", priority=True),
         Binding("f2", "toggle_log", "日志"),
         Binding("f3", "warnings_only", "只看警告"),
     ]
@@ -92,7 +95,12 @@ class PineconeTui(App[None]):
         yield ConversationView(self._backend.config.name, id="conversation")
         yield LogView(id="log")
         yield StatusBar(id="status")
-        yield Input(placeholder="启动中……", id="prompt", disabled=True)
+        yield PromptInput(
+            self._backend.config.data_path / "tui_history.txt",
+            placeholder="启动中……",
+            id="prompt",
+            disabled=True,
+        )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -123,6 +131,15 @@ class PineconeTui(App[None]):
     async def action_quit(self) -> None:
         self._backend.stop()
 
+    async def action_interrupt(self) -> None:
+        """像说“停止”一样打断正在思考或播报的这一轮，后台任务不受影响。"""
+        if self._backend.ready.is_set():
+            await self._backend.dialog.interrupt("user")
+
+    def action_clear(self) -> None:
+        self.query_one(ConversationView).clear()
+        self.query_one(LogView).clear_records()
+
     def action_toggle_log(self) -> None:
         self.query_one(LogView).toggle_class("hidden")
 
@@ -142,7 +159,7 @@ class PineconeTui(App[None]):
 
     async def _enable_input(self) -> None:
         await self._backend.ready.wait()
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one(PromptInput)
         prompt.placeholder = "输入一句话后回车（exit 退出）"
         prompt.disabled = False
         prompt.focus()
@@ -154,6 +171,7 @@ class PineconeTui(App[None]):
         event.input.clear()
         if not text:
             return
+        self.query_one(PromptInput).remember(text)
         if text in ("exit", "quit"):
             self._backend.stop()
             return

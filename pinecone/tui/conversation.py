@@ -71,6 +71,10 @@ class ConversationView(VerticalScroll):
     def add_choices(self, lines: str) -> None:
         self._add(Message("", "", lines, classes="choices"))
 
+    def clear(self) -> None:
+        self._speaking = None
+        self.remove_children()
+
     @property
     def messages(self) -> list[Message]:
         return list(self.query(Message))
