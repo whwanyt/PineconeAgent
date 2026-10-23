@@ -33,7 +33,7 @@ CallTool = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 
 class ResolveUnavailable(Exception):
-    """取播放地址或取歌单的工具没有连上、超时，或没有返回地址。"""
+    """取播放地址或取歌单失败：没连上、超时、调用报错，或结果里没有地址。"""
 
 
 class SongArg(BaseModel):
@@ -201,7 +201,7 @@ class UrlResolver:
         ``fresh`` 为真时跳过缓存，再向音乐服务要一次。
 
         Raises:
-            ResolveUnavailable: 没配置工具、工具不在、超时，或结果里没有地址。
+            ResolveUnavailable: 没配置工具、工具不在、超时、调用报错，或结果里没有地址。
         """
         if track.uri and not fresh:
             return track.uri
@@ -224,12 +224,17 @@ class UrlResolver:
         """调用白名单里的取歌工具，返回原始文本。
 
         Raises:
-            ResolveUnavailable: 超时或音乐服务没有连上。
+            ResolveUnavailable: 超时、没连上，或工具调用报错。
         """
         return await self._invoke(tool, args)
 
     async def _invoke(self, tool: str, args: dict[str, Any]) -> str:
-        """同一时刻只跑一个音乐服务调用。"""
+        """同一时刻只跑一个音乐服务调用。
+
+        工具自己抛出的错误（例如服务端拒绝给地址）也收成 :class:`ResolveUnavailable`。
+        播放逻辑已经按「这一批放不了」处理；若继续往上抛，任务管理器会把整段堆栈记成任务失败。
+        ``CancelledError`` 不是 ``Exception``，打断时照常取消。
+        """
         async with self._lock:
             try:
                 async with asyncio.timeout(self._timeout_s):
@@ -238,6 +243,9 @@ class UrlResolver:
                 raise ResolveUnavailable("音乐服务没有响应") from exc
             except LookupError as exc:
                 raise ResolveUnavailable("音乐服务没有连上") from exc
+            except Exception as exc:
+                logger.warning("音乐服务调用失败：%s", exc)
+                raise ResolveUnavailable("音乐服务没有响应") from exc
         if "暂时不可用" in text:
             raise ResolveUnavailable("音乐服务没有响应")
         return text

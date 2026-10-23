@@ -436,15 +436,24 @@ async def test_missing_playlist_delegates(music, skill_env: SkillEnv) -> None:
 
 
 class _UrlTool:
-    def __init__(self, urls: list[str] | None = None, *, missing: bool = False) -> None:
+    def __init__(
+        self,
+        urls: list[str] | None = None,
+        *,
+        missing: bool = False,
+        error: Exception | None = None,
+    ) -> None:
         self.urls = urls or []
         self.calls = 0
         self.missing = missing
+        self.error = error
 
     async def _run(self, **kwargs: object) -> str:
         self.calls += 1
         if self.missing:
             raise LookupError("get_audio_url")
+        if self.error is not None:
+            raise self.error
         song = kwargs["song"]
         assert isinstance(song, dict)
         url = (
@@ -490,6 +499,23 @@ async def test_online_failure_keeps_current_music(music, skill_env: SkillEnv) ->
     skill._resolver = UrlResolver(skill._ctx.call_tool, "get_audio_url", 1)
     result = await _agent_play_songs(skill, [_song("九万字", "9")])
     assert result.reply == "音乐服务没有连上，在线歌曲暂时放不了"
+    assert fake.uri == kept
+    assert skill._queue.current.title == "晴天"
+
+
+async def test_online_tool_error_stays_in_the_skill(music, skill_env: SkillEnv) -> None:
+    """取地址工具报错时，技能自己收住，原来的歌继续放。"""
+    router, skill, fake = music
+    await router.handle("播放晴天")
+    kept = fake.uri
+    tool = _UrlTool(error=RuntimeError("no valid download url found or vip required"))
+    skill_env.tools["get_audio_url"] = tool
+    skill._url_tool = "get_audio_url"
+    from pinecone.skills.builtin.music.online import UrlResolver
+
+    skill._resolver = UrlResolver(skill._ctx.call_tool, "get_audio_url", 1)
+    result = await _agent_play_songs(skill, [_song("九万字", "9")])
+    assert result.reply == "音乐服务没有响应，在线歌曲暂时放不了"
     assert fake.uri == kept
     assert skill._queue.current.title == "晴天"
 

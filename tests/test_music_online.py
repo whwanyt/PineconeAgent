@@ -124,7 +124,7 @@ async def test_resolver_caches_and_refetches_when_asked() -> None:
 
 
 async def test_resolver_treats_timeout_and_missing_tool_as_unavailable() -> None:
-    """超时、工具不在、以及「暂时不可用」都变成同一种失败，方便技能跳过。"""
+    """超时、工具不在、调用报错，以及「暂时不可用」都变成同一种失败。"""
 
     async def too_slow(name: str, args: dict[str, Any]) -> str:
         await asyncio.sleep(1)
@@ -147,6 +147,14 @@ async def test_resolver_treats_timeout_and_missing_tool_as_unavailable() -> None
     resolver = UrlResolver(broken, "get_audio_url", timeout_s=1)
     with pytest.raises(ResolveUnavailable, match="没有响应"):
         await resolver.resolve(_track())
+
+    async def rejected(name: str, args: dict[str, Any]) -> str:
+        raise RuntimeError("no valid download url found or vip required")
+
+    resolver = UrlResolver(rejected, "get_audio_url", timeout_s=1)
+    with pytest.raises(ResolveUnavailable, match="没有响应") as caught:
+        await resolver.resolve(_track())
+    assert caught.value.__cause__ is not None
 
 
 async def test_resolver_without_tool_does_not_call() -> None:
