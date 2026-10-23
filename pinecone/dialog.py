@@ -14,8 +14,10 @@
 
 主动播报（闹钟、后台任务完成）：
     这轮对话里自己要说的话（前台自定义任务的 speak 动作、AI 调用的技能）直接念；
-    其他来源要等正在播报的回复念完再开口，不然两段声音叠在一起，
-    先念完的一方还会把状态提前切回 IDLE（音乐恢复音量、唤醒阈值降回去）。
+    其他来源要等这轮对话告一段落（空闲或追问窗口）再开口：
+      - 回复播报中：不然两段声音叠在一起，先念完的一方还会把状态提前切回 IDLE；
+      - 用户正在说话 / 系统正在思考：聆听时 VAD 开着，没有回声消除时会把播报录进去，
+        当成用户的话识别。
 
 打断（barge-in）：
     THINKING / SPEAKING 时
@@ -185,26 +187,21 @@ class DialogController:
         """主动播报（闹钟、自定义任务等使用），带状态管理。
 
         - 在这轮对话里调用（前台自定义任务、AI 调用的技能）：就是这轮要说的话，直接念，不改状态；
-        - 其他来源遇到正在播报的回复：先等它念完，再按下面的规则开口；
-        - 空闲 / 追问时进入 SPEAKING，播完回到 IDLE；
-        - 用户正在说话或系统正在思考时只播报，不改变状态，避免打乱当前对话。
+        - 其他来源：等用户说完、回复念完，到空闲或追问窗口时再进入 SPEAKING，播完回到 IDLE。
 
         可取消：等待中或播报中被取消都会立即停止。
         """
         if self._in_current_turn():
             await self._speaker.say(text)
             return
-        await self._wait_while({S.SPEAKING})
-        if self._state.state in (S.IDLE, S.FOLLOW_UP):
-            turn = self._next_turn()
-            await self._state.transition(S.SPEAKING, "主动播报")
-            try:
-                await self._speaker.say(text)
-            finally:
-                if turn == self._turn:
-                    await self._state.transition(S.IDLE, "主动播报结束")
-        else:
+        await self._wait_while({S.LISTENING, S.THINKING, S.SPEAKING})
+        turn = self._next_turn()
+        await self._state.transition(S.SPEAKING, "主动播报")
+        try:
             await self._speaker.say(text)
+        finally:
+            if turn == self._turn:
+                await self._state.transition(S.IDLE, "主动播报结束")
 
     def announce(
         self, text: str, *, name: str = "播报", kind: TaskKind = TaskKind.FOREGROUND

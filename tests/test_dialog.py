@@ -259,3 +259,17 @@ async def test_speech_inside_the_turn_is_not_held_back() -> None:
     await wait_state(state, S.IDLE)
     assert speaker.said == ["我的IP地址是一二三", "好了"]
     await tasks.shutdown()
+
+
+async def test_announcement_waits_while_the_user_is_talking() -> None:
+    """用户正在说话时来了播报：等这轮回复念完再念，不在聆听时出声。"""
+    bus, state, tasks, speaker, _, dialog = build()
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    alarm = tasks.spawn(dialog.speak("闹钟响了"), name="闹钟", kind=TaskKind.BACKGROUND)
+    await asyncio.sleep(0.02)
+    assert speaker.said == [] and state.state == S.LISTENING
+
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await alarm.wait()
+    assert speaker.said == ["回复：现在几点", "闹钟响了"]
+    await tasks.shutdown()
