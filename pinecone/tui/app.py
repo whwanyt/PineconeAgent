@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from textual.app import App, ComposeResult
@@ -11,10 +12,13 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.widgets import Input, RichLog, Static
 
+from pinecone.core.events import ChoicesShown, Spoken, Transcribed
+from pinecone.tui.conversation import ConversationView
 from pinecone.tui.logs import TuiLogHandler
 
 if TYPE_CHECKING:
     from pinecone.core.bus import EventBus
+    from pinecone.core.config import AppConfig
     from pinecone.dialog import DialogController
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,7 @@ _DATE_FORMAT = "%H:%M:%S"
 class Backend(Protocol):
     """界面需要的后端接口，由 :class:`pinecone.app.App` 实现。"""
 
+    config: AppConfig
     bus: EventBus
     dialog: DialogController
     ready: asyncio.Event
@@ -71,9 +76,10 @@ class PineconeTui(App[None]):
         self._log_handler: TuiLogHandler | None = None
         # 发出去还没处理完的输入；持有引用，免得任务被垃圾回收
         self._sending: set[asyncio.Task[None]] = set()
+        self._unsubscribe: list[Callable[[], None]] = []
 
     def compose(self) -> ComposeResult:
-        yield RichLog(id="conversation", wrap=True, markup=False)
+        yield ConversationView(self._backend.config.name, id="conversation")
         yield RichLog(id="log", wrap=True, markup=False, max_lines=2000)
         yield Static("启动中……", id="status")
         yield Input(placeholder="启动中……", id="prompt", disabled=True)
@@ -85,10 +91,21 @@ class PineconeTui(App[None]):
         handler.setFormatter(logging.Formatter(_LOG_FORMAT, _DATE_FORMAT))
         logging.getLogger().addHandler(handler)
         self._log_handler = handler
+
+        # 对话区只看事件：用户的话以识别结果为准，语音模式下也一样能显示
+        conversation = self.query_one(ConversationView)
+        bus = self._backend.bus
+        self._unsubscribe = [
+            bus.subscribe(Transcribed, lambda e: conversation.add_user(e.text)),
+            bus.subscribe(Spoken, lambda e: conversation.add_spoken(e.text, e.utterance)),
+            bus.subscribe(ChoicesShown, lambda e: conversation.add_choices(e.lines)),
+        ]
         self.run_worker(self._run_backend(), name="pinecone")
         self.run_worker(self._enable_input(), name="ready")
 
     def on_unmount(self) -> None:
+        for unsubscribe in self._unsubscribe:
+            unsubscribe()
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
 
@@ -117,7 +134,6 @@ class PineconeTui(App[None]):
         if text in ("exit", "quit"):
             self._backend.stop()
             return
-        self.query_one("#conversation", RichLog).write(f"你  {text}")
         # 不等这一轮处理完：思考或播报中接着输入，就像语音打断一样换成新的一句
         task = asyncio.create_task(self._send(text))
         self._sending.add(task)

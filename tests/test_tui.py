@@ -10,23 +10,29 @@ pytest.importorskip("textual")
 from textual.widgets import Input, RichLog  # noqa: E402
 
 from pinecone.core.bus import EventBus  # noqa: E402
+from pinecone.core.config import AppConfig  # noqa: E402
+from pinecone.core.events import ChoicesShown, Spoken, Transcribed  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
+from pinecone.tui.conversation import ConversationView  # noqa: E402
 
 
 class FakeDialog:
-    def __init__(self) -> None:
+    def __init__(self, bus: EventBus) -> None:
+        self.bus = bus
         self.texts: list[str] = []
 
     async def handle_text(self, text: str) -> None:
         self.texts.append(text)
+        await self.bus.publish(Transcribed(text=text))
 
 
 class FakeBackend:
     """按 pinecone.app.App 的接口：run 启动并等到 stop，启动完成时 set ready。"""
 
     def __init__(self) -> None:
+        self.config = AppConfig()
         self.bus = EventBus()
-        self.dialog = FakeDialog()
+        self.dialog = FakeDialog(self.bus)
         self.ready = asyncio.Event()
         self.stdin: bool | None = None
         self.shut_down = False
@@ -45,6 +51,8 @@ class FakeBackend:
 
 
 def lines(app: PineconeTui, widget_id: str) -> list[str]:
+    if widget_id == "#conversation":
+        return [f"{m.speaker}|{m.body}" for m in app.query_one(ConversationView).messages]
     return [line.text for line in app.query_one(widget_id, RichLog).lines]
 
 
@@ -96,3 +104,24 @@ async def test_exit_command_stops_backend() -> None:
         await submit(pilot, "exit")
         await asyncio.wait_for(backend._stop.wait(), 1)
     assert backend.dialog.texts == []
+
+
+async def test_conversation_merges_one_utterance() -> None:
+    """同一次播报的句子拼成一条；新的播报、候选列表各占一条；用户的话以识别结果为准。"""
+    backend = FakeBackend()
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        bus = backend.bus
+        await bus.publish(Transcribed(text="放歌"))
+        await bus.publish(Spoken(text="找到两首。", utterance=1))
+        await bus.publish(Spoken(text="要听哪一首？", utterance=1))
+        await bus.publish(ChoicesShown(lines="1. 晴天\n2. 稻香"))
+        await bus.publish(Spoken(text="闹钟响了。", utterance=2))
+        await pilot.pause()
+        assert lines(app, "#conversation") == [
+            "你|放歌",
+            "小派|找到两首。要听哪一首？",
+            "|1. 晴天\n2. 稻香",
+            "小派|闹钟响了。",
+        ]
