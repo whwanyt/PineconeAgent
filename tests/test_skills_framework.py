@@ -4,6 +4,8 @@ import asyncio
 import shutil
 from pathlib import Path
 
+import pytest
+
 from pinecone.core.config import PROJECT_ROOT
 from pinecone.dialog import Reply
 from pinecone.nlu.matcher import normalize
@@ -78,3 +80,42 @@ async def test_skill_timeout_and_fallback(skill_env: SkillEnv) -> None:
     router = IntentRouter(skill_env.manager, Fallback())
     assert (await router.handle("慢慢来")).text == "操作超时了，请稍后再试。"
     assert (await router.handle("讲个笑话")).text == "AI:讲个笑话"
+
+
+class _Block:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _Tool:
+    def __init__(self, result) -> None:
+        self._result = result
+
+    async def _run(self, **kwargs):
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result
+
+    coroutine = _run
+
+
+async def test_call_tool_extracts_text_and_reports_missing(skill_env: SkillEnv) -> None:
+    """工具结果里的文本、内容块和附件二元组都能收成一段话；没有这个工具就报错。"""
+    ctx = skill_env.make_context("demo")
+    skill_env.tools["plain"] = _Tool("你好")
+    skill_env.tools["blocks"] = _Tool([_Block("甲"), {"text": "乙"}])
+    skill_env.tools["pair"] = _Tool(("正文", None))
+
+    assert await ctx.call_tool("plain", {}) == "你好"
+    assert await ctx.call_tool("blocks", {}) == "甲\n乙"
+    assert await ctx.call_tool("pair", {}) == "正文"
+    with pytest.raises(LookupError):
+        await ctx.call_tool("missing", {})
+
+
+async def test_call_tool_lets_cancellation_through(skill_env: SkillEnv) -> None:
+    """打断时取消要传到外面，不能被收成普通错误文本。"""
+    ctx = skill_env.make_context("demo")
+    skill_env.tools["stop"] = _Tool(asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await ctx.call_tool("stop", {})

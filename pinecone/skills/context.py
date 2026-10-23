@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ class SkillContext:
         tasks: TaskManager,
         dialog: DialogController,
         output: AudioOutput,
+        tools: Mapping[str, Any] | None = None,
     ) -> None:
         self.skill_name = skill_name
         self.config = config
@@ -47,6 +48,8 @@ class SkillContext:
         self._bus = bus
         self._dialog = dialog
         self._output = output
+        # 与 App 共用同一个字典。技能加载时 MCP 还没连上，稍后由 App 填进去。
+        self._tools = tools if tools is not None else {}
         self.logger = logging.getLogger(f"pinecone.skill.{skill_name}")
         self.extras: dict[str, Any] = {}
         """共享扩展点：由应用注入的额外服务（例如技能管理器、自定义任务引擎）。"""
@@ -118,3 +121,47 @@ class SkillContext:
         例如音乐技能据此在唤醒时压低音量、对话结束后恢复。
         """
         return self._bus.subscribe(StateChanged, lambda e: callback(e.old, e.new))
+
+    async def call_tool(self, name: str, args: dict[str, Any]) -> str:
+        """调用已经加载的工具（通常是 MCP），把结果收成一段文本。
+
+        工具要在调用时已经放进构造时传入的字典。没加载会抛出 ``LookupError``。
+        可取消：工具内部的 ``CancelledError`` 会原样传出，不被收成错误文本。
+
+        Args:
+            name: 工具全名，例如 ``music-mcp-server_get_audio_url``。
+            args: 工具参数。
+
+        Returns:
+            工具返回的文本。内容块列表会拼在一起；``(文本, 附件)`` 只取文本。
+
+        Raises:
+            LookupError: 这个名字的工具没有加载。
+        """
+        tool = self._tools.get(name)
+        if tool is None:
+            raise LookupError(name)
+        coroutine = getattr(tool, "coroutine", None)
+        result = await coroutine(**args) if coroutine is not None else await tool.ainvoke(args)
+        return _tool_text(result)
+
+
+def _tool_text(result: Any) -> str:
+    """把工具的各种返回值收成一段文本。"""
+    if isinstance(result, tuple) and len(result) == 2:
+        result = result[0]
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        parts: list[str] = []
+        for block in result:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+            else:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "\n".join(parts)
+    return str(result)

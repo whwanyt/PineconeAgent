@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
@@ -66,6 +67,8 @@ class App:
         self.ready = asyncio.Event()
         # 需要在退出时关闭的异步资源（数据库连接、MCP 会话等）
         self._resources = contextlib.AsyncExitStack()
+        # 技能和 MCP 共用这份表。技能先加载，MCP 工具在 _build_agent 里填进来。
+        self.tools: dict[str, BaseTool] = {}
 
     def _build_voice_frontend(self) -> DialogController:
         """创建麦克风、回声消除、唤醒词、VAD、识别，并组装对话控制器。"""
@@ -121,6 +124,7 @@ class App:
             tasks=self.tasks,
             dialog=self.dialog,
             output=self.output,
+            tools=self.tools,
         )
         ctx.extras["skills"] = self.skills
         return ctx
@@ -157,12 +161,15 @@ class App:
             await store.setup()
             memory = LongTermMemory(store)
 
+        mcp_tools = await load_mcp_tools(cfg.mcp_servers, call_timeout_s=cfg.mcp_tool_timeout_s)
+        self.tools.clear()
+        self.tools.update({tool.name: tool for tool in mcp_tools})
         agent = VoiceAgent(
             self.config,
             model,
             tools=[
                 *skill_tools(self.skills),
-                *await load_mcp_tools(cfg.mcp_servers, call_timeout_s=cfg.mcp_tool_timeout_s),
+                *mcp_tools,
             ],
             checkpointer=checkpointer,
             memory=memory,
