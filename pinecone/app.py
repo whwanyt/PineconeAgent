@@ -14,7 +14,8 @@
 两种运行模式：
     - 语音模式（默认）：麦克风 + 唤醒词 + 识别；
     - 文本模式（``--text``）：从终端输入文字代替说话，方便在电脑上调试技能和 AI，
-      仍然会通过扬声器播报回复。
+      仍然会通过扬声器播报回复。默认用全屏界面（:mod:`pinecone.tui`）分区显示对话和日志，
+      ``--plain`` 或输入不是终端时退回逐行读标准输入。
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ class App:
         self.mic: AudioInput | None = None
         self.dialog: DialogController
         self._stop = asyncio.Event()
+        # setup 完成后 set，文本界面等它再放开输入框
+        self.ready = asyncio.Event()
         # 需要在退出时关闭的异步资源（数据库连接、MCP 会话等）
         self._resources = contextlib.AsyncExitStack()
 
@@ -192,11 +195,16 @@ class App:
             self.config.name,
             "（文本模式）" if self.text_mode else f"，请说「{wake_words}」唤醒",
         )
+        self.ready.set()
 
-    async def run(self) -> None:
-        """启动并运行，直到 :meth:`stop` 被调用。"""
+    async def run(self, *, stdin: bool = True) -> None:
+        """启动并运行，直到 :meth:`stop` 被调用。
+
+        Args:
+            stdin: 文本模式下是否逐行读标准输入。全屏界面自己负责输入，传 False。
+        """
         await self.setup()
-        text_loop = asyncio.create_task(self._text_loop()) if self.text_mode else None
+        text_loop = asyncio.create_task(self._text_loop()) if self.text_mode and stdin else None
         try:
             await self._stop.wait()
         finally:
