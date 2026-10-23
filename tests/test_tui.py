@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from pinecone.core.task_manager import TaskKind, TaskManager  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
 from pinecone.tui.logs import LogView  # noqa: E402
+from pinecone.tui.native import native_output_to_log  # noqa: E402
 from pinecone.tui.prompt import PromptInput  # noqa: E402
 from pinecone.tui.status import StatusBar  # noqa: E402
 
@@ -239,3 +242,17 @@ async def test_escape_interrupts_and_ctrl_l_clears(tmp_path: Path) -> None:
         await pilot.press("ctrl+l")
         await pilot.pause()
         assert lines(app, "#conversation") == [] and lines(app, "#log") == []
+
+
+def test_native_output_goes_to_log(caplog: pytest.LogCaptureFixture) -> None:
+    """C 库直接写 fd 2 的字进日志；界面拿到的是另一份终端；退出后 1、2 号还原。"""
+    before = os.fstat(2).st_ino, sys.__stderr__
+    with caplog.at_level(logging.INFO, logger="native"), native_output_to_log():
+        assert sys.__stderr__.fileno() != 2
+        os.write(2, b"Unknown token: shei2\n")
+        os.write(1, b"from stdout\n")
+    assert os.fstat(2).st_ino == before[0] and sys.__stderr__ is before[1]
+    assert [r.getMessage() for r in caplog.records if r.name == "native"] == [
+        "Unknown token: shei2",
+        "from stdout",
+    ]

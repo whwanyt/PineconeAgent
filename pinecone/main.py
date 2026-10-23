@@ -63,8 +63,10 @@ async def _amain(args: argparse.Namespace) -> None:
         loop.add_signal_handler(sig, app.stop)
     if use_tui:
         from pinecone.tui import PineconeTui
+        from pinecone.tui.native import native_output_to_log
 
-        await PineconeTui(app).run_async()
+        with native_output_to_log():
+            await PineconeTui(app).run_async()
     else:
         await app.run()
 
