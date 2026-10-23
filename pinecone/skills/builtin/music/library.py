@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pinecone.nlu.matcher import normalize
 
@@ -31,14 +33,56 @@ def search_key(text: str) -> str:
 
 @dataclass(frozen=True)
 class Track:
-    """一首歌（或一个电台流）。"""
+    """一首歌（或一个电台流）。
+
+    在线歌曲可以暂时没有 ``uri``：播放列表和自建歌单只保存 ``song`` 里的歌曲信息，
+    快轮到时再取播放地址。``uri`` 有值时优先当作已经可以交给播放器的地址。
+    """
 
     title: str
-    """播报用的名称（文件名去掉扩展名，或电台名）。"""
+    """播报用的名称（文件名去掉扩展名，或电台名、在线歌名）。"""
     uri: str
-    """文件路径或流地址。"""
+    """文件路径或流地址。在线歌还没取地址时为空。"""
     search_key: str = ""
     """搜索用的归一化文本（含目录名，便于按歌手搜索）。"""
+    artist: str = ""
+    """歌手。在线歌曲用来组成「黄诗扶的九万字」这样的播报名。"""
+    song: str = ""
+    """在线歌曲信息的 JSON。不含封面、歌词和会过期的播放地址。"""
+
+    @property
+    def online(self) -> bool:
+        """是否是还没落到本地文件的在线歌曲。"""
+        return not self.uri and bool(self.song)
+
+    @property
+    def key(self) -> str:
+        """去重用的稳定标识。有地址用地址，否则用 ``来源:id``。"""
+        if self.uri:
+            return self.uri
+        info = self.song_info()
+        source = str(info.get("source") or "")
+        song_id = str(info.get("id") or "")
+        if source or song_id:
+            return f"{source}:{song_id}"
+        return self.search_key or self.title
+
+    @property
+    def label(self) -> str:
+        """适合朗读的名字。有歌手时带上歌手。"""
+        if self.artist:
+            return f"{self.artist}的{self.title}"
+        return self.title
+
+    def song_info(self) -> dict[str, Any]:
+        """还原取播放地址需要的歌曲对象。没有在线信息时返回空字典。"""
+        if not self.song:
+            return {}
+        try:
+            data = json.loads(self.song)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
 
 class MusicLibrary:
