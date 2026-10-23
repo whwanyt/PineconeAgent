@@ -166,6 +166,13 @@ class DialogController:
         self._bus.subscribe(SpeechEnded, self._on_speech_ended)
         self._bus.subscribe(StateChanged, self._on_state_changed)
 
+    @property
+    def timer_remaining(self) -> float | None:
+        """当前超时（聆听时没开口、追问窗口）还剩几秒，没有在计时为 None。供界面显示倒计时。"""
+        if self._timer is None:
+            return None
+        return max(0.0, self._timer.when() - asyncio.get_running_loop().time())
+
     def set_handler(self, handler: DialogHandler) -> None:
         """替换指令处理器（技能路由器初始化完成后调用）。"""
         self._handler = handler

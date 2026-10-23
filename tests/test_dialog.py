@@ -110,14 +110,16 @@ async def wait_state(state: StateMachine, target: S, timeout: float = 1.0) -> No
 
 
 async def test_full_turn_and_follow_up_timeout() -> None:
-    """唤醒 → 聆听 → 思考 → 播报 → 追问窗口 → 超时回到空闲。"""
-    bus, state, _, speaker, pipeline, _ = build()
+    """唤醒 → 聆听 → 思考 → 播报 → 追问窗口（可查剩余秒数）→ 超时回到空闲。"""
+    bus, state, _, speaker, pipeline, dialog = build()
     await bus.publish(WakeWordDetected(keyword="小派小派"))
     assert state.state == S.LISTENING and pipeline.vad_enabled
 
     await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
     await wait_state(state, S.FOLLOW_UP)
     assert speaker.said == ["回复：现在几点"]
+    remaining = dialog.timer_remaining
+    assert remaining is not None and 0 <= remaining <= 0.1
     await wait_state(state, S.IDLE)
     assert not pipeline.vad_enabled
 

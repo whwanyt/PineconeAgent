@@ -12,15 +12,20 @@ from textual.widgets import Input, RichLog  # noqa: E402
 from pinecone.core.bus import EventBus  # noqa: E402
 from pinecone.core.config import AppConfig  # noqa: E402
 from pinecone.core.events import ChoicesShown, Spoken, Transcribed  # noqa: E402
+from pinecone.core.state import AssistantState as S  # noqa: E402
+from pinecone.core.state import StateMachine  # noqa: E402
+from pinecone.core.task_manager import TaskKind, TaskManager  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
 from pinecone.tui.logs import LogView  # noqa: E402
+from pinecone.tui.status import StatusBar  # noqa: E402
 
 
 class FakeDialog:
     def __init__(self, bus: EventBus) -> None:
         self.bus = bus
         self.texts: list[str] = []
+        self.timer_remaining: float | None = None
 
     async def handle_text(self, text: str) -> None:
         self.texts.append(text)
@@ -33,6 +38,8 @@ class FakeBackend:
     def __init__(self) -> None:
         self.config = AppConfig()
         self.bus = EventBus()
+        self.state = StateMachine(self.bus)
+        self.tasks = TaskManager(self.bus)
         self.dialog = FakeDialog(self.bus)
         self.ready = asyncio.Event()
         self.stdin: bool | None = None
@@ -153,3 +160,31 @@ async def test_log_filter_and_toggle() -> None:
         assert not view.display
         await pilot.press("f2")
         assert view.display
+
+
+async def test_status_bar_shows_state_countdown_and_tasks() -> None:
+    """状态栏显示当前状态、追问倒计时和技能任务，不列对话流程自己的任务。"""
+    backend = FakeBackend()
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        bar = app.query_one(StatusBar)
+
+        def text() -> str:
+            bar.refresh_status()
+            return str(bar.content)
+
+        assert "空闲" in text()
+        await backend.state.transition(S.LISTENING)
+        await backend.state.transition(S.THINKING)
+        backend.tasks.spawn(asyncio.sleep(10), name="对话", source="dialog")
+        backend.tasks.spawn(
+            asyncio.sleep(10), name="音乐", kind=TaskKind.BACKGROUND, source="skill:music"
+        )
+        assert "思考中" in text() and "任务：音乐" in text() and "对话" not in text()
+
+        await backend.state.transition(S.FOLLOW_UP)
+        backend.dialog.timer_remaining = 7.6
+        assert "等待追问" in text() and "8s" in text()
+        await backend.tasks.shutdown()

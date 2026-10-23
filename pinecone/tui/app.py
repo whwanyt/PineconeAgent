@@ -10,15 +10,18 @@ from typing import TYPE_CHECKING, Protocol
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Footer, Input
 
 from pinecone.core.events import ChoicesShown, Spoken, Transcribed
 from pinecone.tui.conversation import ConversationView
 from pinecone.tui.logs import LogView, TuiLogHandler
+from pinecone.tui.status import StatusBar
 
 if TYPE_CHECKING:
     from pinecone.core.bus import EventBus
     from pinecone.core.config import AppConfig
+    from pinecone.core.state import StateMachine
+    from pinecone.core.task_manager import TaskManager
     from pinecone.dialog import DialogController
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,8 @@ class Backend(Protocol):
 
     config: AppConfig
     bus: EventBus
+    state: StateMachine
+    tasks: TaskManager
     dialog: DialogController
     ready: asyncio.Event
 
@@ -86,7 +91,7 @@ class PineconeTui(App[None]):
     def compose(self) -> ComposeResult:
         yield ConversationView(self._backend.config.name, id="conversation")
         yield LogView(id="log")
-        yield Static("启动中……", id="status")
+        yield StatusBar(id="status")
         yield Input(placeholder="启动中……", id="prompt", disabled=True)
         yield Footer()
 
@@ -141,7 +146,8 @@ class PineconeTui(App[None]):
         prompt.placeholder = "输入一句话后回车（exit 退出）"
         prompt.disabled = False
         prompt.focus()
-        self.query_one("#status", Static).update("就绪")
+        backend = self._backend
+        self.query_one(StatusBar).watch(backend.state, backend.dialog, backend.tasks)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
