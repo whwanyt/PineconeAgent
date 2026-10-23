@@ -10,6 +10,7 @@
     播报开始          ─▶ SPEAKING（提高唤醒阈值；如开启 VAD 打断则保持 VAD）
     播报结束          ─▶ FOLLOW_UP（追问窗口，开 VAD）─超时─▶ IDLE
     追问窗口内开口    ─▶ LISTENING ...
+    识别结果为空      ─▶ FOLLOW_UP（多半是噪音，再等一个窗口；连续几次没听清才回到 IDLE）
 
 打断（barge-in）：
     THINKING / SPEAKING 时
@@ -57,6 +58,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+OnExpire = Callable[[], Awaitable[None]]
+
+_MAX_UNHEARD = 2
+"""连续多少次识别为空后结束对话。持续的环境噪音会不停触发 VAD，不能无限等下去。"""
+
 
 @dataclass
 class Reply:
@@ -74,7 +80,7 @@ class Reply:
     """本轮追问窗口的秒数。为空时用配置里的 ``dialog.follow_up_s``。提问时用更长的等待。"""
     choice_lines: str | None = None
     """文本模式要打印的编号列表。语音模式只念问句。"""
-    on_expire: Callable[[], Awaitable[None]] | None = None
+    on_expire: OnExpire | None = None
     """追问窗口超时、用户一直没开口时调用。例如 AI 用它作废没人回答的提问，
     免得之后说的每一句都被当成那次提问的回答。"""
 
@@ -131,6 +137,10 @@ class DialogController:
         self._turn = 0
         self._timer: asyncio.TimerHandle | None = None
         self._beep = beep(sample_rate=16000)
+        # 没听清时重新等待用的窗口：秒数 + 超时回调。唤醒后是默认追问窗口，
+        # 回复后换成该回复的窗口（例如提问的更长等待）
+        self._window: tuple[float, OnExpire | None] = (config.dialog.follow_up_s, None)
+        self._unheard = 0
 
         barge = config.audio.barge_in
         # VAD 打断必须在回声消除生效时才启用，否则扬声器的声音会让音箱自己打断自己
@@ -211,6 +221,8 @@ class DialogController:
         turn = self._next_turn()
         await self._state.transition(S.LISTENING, f"唤醒：{event.keyword}")
         self._arm_timer(self._config.vad.no_speech_timeout_s, lambda: self._on_listen_timeout(turn))
+        self._window = (self._config.dialog.follow_up_s, None)
+        self._unheard = 0
 
         dialog_cfg = self._config.dialog
         if dialog_cfg.wake_beep:
@@ -272,8 +284,9 @@ class DialogController:
         if turn != self._turn:
             return
         if not text:
-            await self._state.transition(S.IDLE, "没听清")
+            await self._listen_again(turn)
             return
+        self._unheard = 0
         await self._bus.publish(Transcribed(text=text))
         await self._respond(text, turn)
 
@@ -305,9 +318,25 @@ class DialogController:
         )
         if reply.follow_up and follow_up_s > 0:
             await self._state.transition(S.FOLLOW_UP, "等待追问")
+            self._window = (follow_up_s, reply.on_expire)
             self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn, reply.on_expire))
         else:
             await self._state.transition(S.IDLE, "对话结束")
+
+    async def _listen_again(self, turn: int) -> None:
+        """识别结果为空：多半是咳嗽、关门声或提示音，回到追问窗口再等一次。
+
+        不播报“没听清”，噪音一次就念一句会很烦。沿用这一轮的窗口，
+        提问时仍是更长的等待，超时后也照样作废提问。连续没听清太多次才结束。
+        """
+        self._unheard += 1
+        seconds, on_expire = self._window
+        if self._unheard > _MAX_UNHEARD or seconds <= 0:
+            await self._state.transition(S.IDLE, "没听清")
+            await self._expire(on_expire)
+            return
+        await self._state.transition(S.FOLLOW_UP, "没听清，继续等")
+        self._arm_timer(seconds, lambda: self._on_follow_up_timeout(turn, on_expire))
 
     # ================================================================== 超时
 
@@ -315,12 +344,15 @@ class DialogController:
         if turn == self._turn and self._state.state == S.LISTENING:
             await self._state.transition(S.IDLE, "没有说话")
 
-    async def _on_follow_up_timeout(
-        self, turn: int, on_expire: Callable[[], Awaitable[None]] | None = None
-    ) -> None:
+    async def _on_follow_up_timeout(self, turn: int, on_expire: OnExpire | None = None) -> None:
         if turn != self._turn or self._state.state != S.FOLLOW_UP:
             return
         await self._state.transition(S.IDLE, "追问超时")
+        await self._expire(on_expire)
+
+    @staticmethod
+    async def _expire(on_expire: OnExpire | None) -> None:
+        """调用回复的超时回调，出错只记日志，不影响对话流程。"""
         if on_expire is None:
             return
         try:

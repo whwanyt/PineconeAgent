@@ -50,8 +50,11 @@ class FakePipeline:
 
 
 class FakeAsr:
+    def __init__(self, results: list[str] | None = None) -> None:
+        self.results = list(results or [])
+
     async def transcribe(self, audio) -> str:
-        return "现在几点"
+        return self.results.pop(0) if self.results else "现在几点"
 
 
 class Handler:
@@ -65,6 +68,7 @@ def build(
     vad_barge_in: bool = False,
     aec: bool = False,
     handler: object | None = None,
+    asr_results: list[str] | None = None,
 ):
     cfg = AppConfig()
     cfg.dialog.wake_beep = False
@@ -85,7 +89,7 @@ def build(
         output=FakeOutput(),  # type: ignore[arg-type]
         handler=handler or Handler(),  # type: ignore[arg-type]
         pipeline=pipeline,  # type: ignore[arg-type]
-        asr=FakeAsr(),  # type: ignore[arg-type]
+        asr=FakeAsr(asr_results),  # type: ignore[arg-type]
         aec_effective=aec,
     )
     dialog.start()
@@ -164,4 +168,49 @@ async def test_on_expire_runs_only_when_follow_up_times_out() -> None:
     await wait_state(state, S.IDLE)
     await asyncio.sleep(0.01)
     assert expired == ["现在几点"]
+    await tasks.shutdown()
+
+
+async def _say(bus: EventBus) -> None:
+    """模拟用户说了一句（开口 + 说完）。"""
+    await bus.publish(SpeechStarted())
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+
+
+async def test_unheard_speech_keeps_listening() -> None:
+    """识别结果为空时回到追问窗口，接着说的话照常处理，不必重新唤醒。"""
+    bus, state, tasks, speaker, pipeline = build(asr_results=[""])
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.FOLLOW_UP)
+    assert speaker.said == [] and pipeline.vad_enabled
+
+    await _say(bus)
+    await wait_state(state, S.FOLLOW_UP)
+    assert speaker.said == ["回复：现在几点"]
+    await tasks.shutdown()
+
+
+async def test_repeated_noise_ends_the_dialog_and_expires() -> None:
+    """连续没听清超过上限就结束对话，并调用回复的 on_expire。"""
+    expired: list[int] = []
+
+    class Asking:
+        async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+            async def expire() -> None:
+                expired.append(1)
+
+            return Reply(text="你要哪一个？", listen_s=5, on_expire=expire)
+
+    bus, state, tasks, _, _ = build(handler=Asking(), asr_results=["第二", "", "", ""])
+    await bus.publish(WakeWordDetected(keyword="小派小派"))
+    await bus.publish(SpeechEnded(audio=np.zeros(1600, np.float32)))
+    await wait_state(state, S.FOLLOW_UP)
+    for _ in range(2):
+        await _say(bus)
+        await wait_state(state, S.FOLLOW_UP)
+        assert not expired
+    await _say(bus)
+    await wait_state(state, S.IDLE)
+    assert expired == [1]
     await tasks.shutdown()
