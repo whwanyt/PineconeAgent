@@ -10,6 +10,14 @@
     播报开始          ─▶ SPEAKING（提高唤醒阈值；如开启 VAD 打断则保持 VAD）
     播报结束          ─▶ FOLLOW_UP（追问窗口，开 VAD）─超时─▶ IDLE
     追问窗口内开口    ─▶ LISTENING ...
+    识别结果为空      ─▶ FOLLOW_UP（多半是噪音，再等一个窗口；连续几次没听清才回到 IDLE）
+
+主动播报（闹钟、后台任务完成）：
+    这轮对话里自己要说的话（前台自定义任务的 speak 动作、AI 调用的技能）直接念；
+    其他来源要等这轮对话告一段落（空闲或追问窗口）再开口：
+      - 回复播报中：不然两段声音叠在一起，先念完的一方还会把状态提前切回 IDLE；
+      - 用户正在说话 / 系统正在思考：聆听时 VAD 开着，没有回声消除时会把播报录进去，
+        当成用户的话识别。
 
 打断（barge-in）：
     THINKING / SPEAKING 时
@@ -36,6 +44,7 @@ import numpy as np
 from pinecone.audio.utils import beep
 from pinecone.core.events import (
     BargeIn,
+    ChoicesShown,
     SpeechEnded,
     SpeechStarted,
     StateChanged,
@@ -57,6 +66,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+OnExpire = Callable[[], Awaitable[None]]
+
+_MAX_UNHEARD = 2
+"""连续多少次识别为空后结束对话。持续的环境噪音会不停触发 VAD，不能无限等下去。"""
+
 
 @dataclass
 class Reply:
@@ -70,20 +84,32 @@ class Reply:
     stream: AsyncIterable[str] | None = None
     follow_up: bool = True
     """播报完是否进入追问窗口（AI 闲聊适合开启；“已停止”这类回复可以关闭）。"""
+    listen_s: float | None = None
+    """本轮追问窗口的秒数。为空时用配置里的 ``dialog.follow_up_s``。提问时用更长的等待。"""
+    choice_lines: str | None = None
+    """编号候选列表，以 :class:`ChoicesShown` 事件发出，由文本界面显示。语音模式只念问句。"""
+    on_expire: OnExpire | None = None
+    """追问窗口超时、用户一直没开口时调用。例如 AI 用它作废没人回答的提问，
+    免得之后说的每一句都被当成那次提问的回答。"""
 
 
 class DialogHandler(Protocol):
     """处理一句已识别文本的对象（技能路由器实现此协议）。"""
 
-    async def handle(self, text: str) -> Reply:
-        """处理用户说的话并返回回复。运行在可取消的前台任务中。"""
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+        """处理用户说的话并返回回复。运行在可取消的前台任务中。
+
+        Args:
+            text: 用户原话。
+            hint: 技能转交时的情况说明，不播报，仅提供给兜底 AI。
+        """
         ...
 
 
 class EchoHandler:
     """调试用处理器：复述听到的话。"""
 
-    async def handle(self, text: str) -> Reply:
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
         return Reply(text=f"你说的是：{text}")
 
 
@@ -116,6 +142,14 @@ class DialogController:
         self._turn = 0
         self._timer: asyncio.TimerHandle | None = None
         self._beep = beep(sample_rate=16000)
+        # 没听清时重新等待用的窗口：秒数 + 超时回调。唤醒后是默认追问窗口，
+        # 回复后换成该回复的窗口（例如提问的更长等待）
+        self._window: tuple[float, OnExpire | None] = (config.dialog.follow_up_s, None)
+        self._unheard = 0
+        # 当前这轮的「对话」任务，用来判断主动播报是不是这轮对话自己说的
+        self._turn_task: RunningTask | None = None
+        # 每次状态变化都会 set，主动播报靠它等回复念完
+        self._state_changed = asyncio.Event()
 
         barge = config.audio.barge_in
         # VAD 打断必须在回声消除生效时才启用，否则扬声器的声音会让音箱自己打断自己
@@ -131,6 +165,13 @@ class DialogController:
         self._bus.subscribe(SpeechStarted, self._on_speech_started)
         self._bus.subscribe(SpeechEnded, self._on_speech_ended)
         self._bus.subscribe(StateChanged, self._on_state_changed)
+
+    @property
+    def timer_remaining(self) -> float | None:
+        """当前超时（聆听时没开口、追问窗口）还剩几秒，没有在计时为 None。供界面显示倒计时。"""
+        if self._timer is None:
+            return None
+        return max(0.0, self._timer.when() - asyncio.get_running_loop().time())
 
     def set_handler(self, handler: DialogHandler) -> None:
         """替换指令处理器（技能路由器初始化完成后调用）。"""
@@ -150,20 +191,22 @@ class DialogController:
     async def speak(self, text: str) -> None:
         """主动播报（闹钟、自定义任务等使用），带状态管理。
 
-        空闲 / 追问 / 播报中时会进入 SPEAKING 并在播完后回到 IDLE；
-        如果用户正在说话或系统正在思考，则只播报不改变状态，避免打乱当前对话。
-        可取消：被取消时立即停止播报。
+        - 在这轮对话里调用（前台自定义任务、AI 调用的技能）：就是这轮要说的话，直接念，不改状态；
+        - 其他来源：等用户说完、回复念完，到空闲或追问窗口时再进入 SPEAKING，播完回到 IDLE。
+
+        可取消：等待中或播报中被取消都会立即停止。
         """
-        if self._state.state in (S.IDLE, S.FOLLOW_UP, S.SPEAKING):
-            turn = self._next_turn()
-            await self._state.transition(S.SPEAKING, "主动播报")
-            try:
-                await self._speaker.say(text)
-            finally:
-                if turn == self._turn:
-                    await self._state.transition(S.IDLE, "主动播报结束")
-        else:
+        if self._in_current_turn():
             await self._speaker.say(text)
+            return
+        await self._wait_while({S.LISTENING, S.THINKING, S.SPEAKING})
+        turn = self._next_turn()
+        await self._state.transition(S.SPEAKING, "主动播报")
+        try:
+            await self._speaker.say(text)
+        finally:
+            if turn == self._turn:
+                await self._state.transition(S.IDLE, "主动播报结束")
 
     def announce(
         self, text: str, *, name: str = "播报", kind: TaskKind = TaskKind.FOREGROUND
@@ -180,7 +223,10 @@ class DialogController:
             await self._state.transition(S.LISTENING, "文本输入")
         await self._state.transition(S.THINKING, "文本输入")
         await self._bus.publish(Transcribed(text=text))
-        rt = self._tasks.spawn(self._respond(text, turn), name="对话", source="dialog")
+        rt = self._tasks.spawn(
+            self._run_turn(self._respond(text, turn), turn), name="对话", source="dialog"
+        )
+        self._turn_task = rt
         await rt.wait()
 
     # ================================================================== 事件处理
@@ -196,6 +242,8 @@ class DialogController:
         turn = self._next_turn()
         await self._state.transition(S.LISTENING, f"唤醒：{event.keyword}")
         self._arm_timer(self._config.vad.no_speech_timeout_s, lambda: self._on_listen_timeout(turn))
+        self._window = (self._config.dialog.follow_up_s, None)
+        self._unheard = 0
 
         dialog_cfg = self._config.dialog
         if dialog_cfg.wake_beep:
@@ -226,10 +274,15 @@ class DialogController:
         self._cancel_timer()
         turn = self._turn
         await self._state.transition(S.THINKING, "说完")
-        self._tasks.spawn(self._process_audio(event.audio, turn), name="对话", source="dialog")
+        self._turn_task = self._tasks.spawn(
+            self._run_turn(self._process_audio(event.audio, turn), turn),
+            name="对话",
+            source="dialog",
+        )
 
     async def _on_state_changed(self, event: StateChanged) -> None:
         """根据状态调整前端：VAD 开关、唤醒阈值。"""
+        self._state_changed.set()
         if self._pipeline is None:
             return
         new = S(event.new)
@@ -250,6 +303,19 @@ class DialogController:
 
     # ================================================================== 对话流程
 
+    async def _run_turn(self, body: Awaitable[None], turn: int) -> None:
+        """运行一轮对话（「对话」托管任务的入口），结束时兜底复位状态。
+
+        正常结束时已经在追问窗口或空闲；被打断时轮次已经变了，新一轮自己管状态。
+        剩下的情况是识别或播放出错，或者被别处取消。这时状态会停在思考或播报中，
+        音乐一直压低，主动播报也一直在等，所以要复位到空闲。异常仍向上抛，由 TaskManager 记日志。
+        """
+        try:
+            await body
+        finally:
+            if turn == self._turn and self._state.state in (S.THINKING, S.SPEAKING):
+                await self._state.transition(S.IDLE, "对话异常结束")
+
     async def _process_audio(self, audio: np.ndarray, turn: int) -> None:
         """识别一句话并回复（运行在托管任务「对话」中）。"""
         assert self._asr is not None
@@ -257,8 +323,9 @@ class DialogController:
         if turn != self._turn:
             return
         if not text:
-            await self._state.transition(S.IDLE, "没听清")
+            await self._listen_again(turn)
             return
+        self._unheard = 0
         await self._bus.publish(Transcribed(text=text))
         await self._respond(text, turn)
 
@@ -282,13 +349,45 @@ class DialogController:
                 await self._speaker.say(reply.text or "")
         if turn != self._turn:
             return
+        if reply.choice_lines:
+            await self._bus.publish(ChoicesShown(lines=reply.choice_lines))
 
-        follow_up_s = self._config.dialog.follow_up_s
+        follow_up_s = (
+            reply.listen_s if reply.listen_s is not None else self._config.dialog.follow_up_s
+        )
         if reply.follow_up and follow_up_s > 0:
             await self._state.transition(S.FOLLOW_UP, "等待追问")
-            self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn))
+            self._window = (follow_up_s, reply.on_expire)
+            self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn, reply.on_expire))
         else:
             await self._state.transition(S.IDLE, "对话结束")
+
+    async def _listen_again(self, turn: int) -> None:
+        """识别结果为空：多半是咳嗽、关门声或提示音，回到追问窗口再等一次。
+
+        不播报“没听清”，噪音一次就念一句会很烦。沿用这一轮的窗口，
+        提问时仍是更长的等待，超时后也照样作废提问。连续没听清太多次才结束。
+        """
+        self._unheard += 1
+        seconds, on_expire = self._window
+        if self._unheard > _MAX_UNHEARD or seconds <= 0:
+            await self._state.transition(S.IDLE, "没听清")
+            await self._expire(on_expire)
+            return
+        await self._state.transition(S.FOLLOW_UP, "没听清，继续等")
+        self._arm_timer(seconds, lambda: self._on_follow_up_timeout(turn, on_expire))
+
+    def _in_current_turn(self) -> bool:
+        """调用方是否运行在当前这轮「对话」任务里（含 AI 工具启动的技能子任务）。"""
+        rt = self._turn_task
+        return rt is not None and not rt.done and self._tasks.within(rt)
+
+    async def _wait_while(self, states: set[S]) -> None:
+        """等到状态离开 ``states``。可取消。"""
+        while self._state.state in states:
+            # 先 clear 再 wait：多个播报同时在等时，各自都会重新检查状态，不会空转
+            self._state_changed.clear()
+            await self._state_changed.wait()
 
     # ================================================================== 超时
 
@@ -296,9 +395,21 @@ class DialogController:
         if turn == self._turn and self._state.state == S.LISTENING:
             await self._state.transition(S.IDLE, "没有说话")
 
-    async def _on_follow_up_timeout(self, turn: int) -> None:
-        if turn == self._turn and self._state.state == S.FOLLOW_UP:
-            await self._state.transition(S.IDLE, "追问超时")
+    async def _on_follow_up_timeout(self, turn: int, on_expire: OnExpire | None = None) -> None:
+        if turn != self._turn or self._state.state != S.FOLLOW_UP:
+            return
+        await self._state.transition(S.IDLE, "追问超时")
+        await self._expire(on_expire)
+
+    @staticmethod
+    async def _expire(on_expire: OnExpire | None) -> None:
+        """调用回复的超时回调，出错只记日志，不影响对话流程。"""
+        if on_expire is None:
+            return
+        try:
+            await on_expire()
+        except Exception:
+            logger.exception("追问超时的清理失败")
 
     def _arm_timer(self, delay: float, callback: Callable[[], Awaitable[None]]) -> None:
         """设置（替换）唯一的超时定时器。"""

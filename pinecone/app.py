@@ -14,7 +14,8 @@
 两种运行模式：
     - 语音模式（默认）：麦克风 + 唤醒词 + 识别；
     - 文本模式（``--text``）：从终端输入文字代替说话，方便在电脑上调试技能和 AI，
-      仍然会通过扬声器播报回复。
+      仍然会通过扬声器播报回复。默认用全屏界面（:mod:`pinecone.tui`）分区显示对话和日志，
+      ``--plain`` 或输入不是终端时退回逐行读标准输入。
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
@@ -36,6 +38,7 @@ from pinecone.audio.input import AudioInput
 from pinecone.audio.output import AudioOutput
 from pinecone.core.bus import EventBus
 from pinecone.core.config import AppConfig
+from pinecone.core.events import ChoicesShown
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
 from pinecone.dialog import DialogController, EchoHandler
@@ -56,12 +59,16 @@ class App:
         self.state = StateMachine(self.bus)
         self.tasks = TaskManager(self.bus)
         self.output = AudioOutput(config.audio)
-        self.speaker = Speaker(create_tts(config), self.output)
+        self.speaker = Speaker(create_tts(config), self.output, self.bus)
         self.mic: AudioInput | None = None
         self.dialog: DialogController
         self._stop = asyncio.Event()
+        # setup 完成后 set，文本界面等它再放开输入框
+        self.ready = asyncio.Event()
         # 需要在退出时关闭的异步资源（数据库连接、MCP 会话等）
         self._resources = contextlib.AsyncExitStack()
+        # 技能和 MCP 共用这份表。技能先加载，MCP 工具在 _build_agent 里填进来。
+        self.tools: dict[str, BaseTool] = {}
 
     def _build_voice_frontend(self) -> DialogController:
         """创建麦克风、回声消除、唤醒词、VAD、识别，并组装对话控制器。"""
@@ -117,6 +124,7 @@ class App:
             tasks=self.tasks,
             dialog=self.dialog,
             output=self.output,
+            tools=self.tools,
         )
         ctx.extras["skills"] = self.skills
         return ctx
@@ -153,12 +161,15 @@ class App:
             await store.setup()
             memory = LongTermMemory(store)
 
+        mcp_tools = await load_mcp_tools(cfg.mcp_servers, call_timeout_s=cfg.mcp_tool_timeout_s)
+        self.tools.clear()
+        self.tools.update({tool.name: tool for tool in mcp_tools})
         agent = VoiceAgent(
             self.config,
             model,
             tools=[
                 *skill_tools(self.skills),
-                *await load_mcp_tools(cfg.mcp_servers, call_timeout_s=cfg.mcp_tool_timeout_s),
+                *mcp_tools,
             ],
             checkpointer=checkpointer,
             memory=memory,
@@ -191,11 +202,16 @@ class App:
             self.config.name,
             "（文本模式）" if self.text_mode else f"，请说「{wake_words}」唤醒",
         )
+        self.ready.set()
 
-    async def run(self) -> None:
-        """启动并运行，直到 :meth:`stop` 被调用。"""
+    async def run(self, *, stdin: bool = True) -> None:
+        """启动并运行，直到 :meth:`stop` 被调用。
+
+        Args:
+            stdin: 文本模式下是否逐行读标准输入。全屏界面自己负责输入，传 False。
+        """
         await self.setup()
-        text_loop = asyncio.create_task(self._text_loop()) if self.text_mode else None
+        text_loop = asyncio.create_task(self._text_loop()) if self.text_mode and stdin else None
         try:
             await self._stop.wait()
         finally:
@@ -220,6 +236,7 @@ class App:
     async def _text_loop(self) -> None:
         """文本模式：从标准输入逐行读取，当作识别结果处理。输入 exit 退出。"""
         print("文本模式：输入一句话后回车（exit 退出）")
+        self.bus.subscribe(ChoicesShown, lambda e: print(e.lines, flush=True))
         while True:
             with contextlib.suppress(EOFError):
                 line = (await asyncio.to_thread(input, "> ")).strip()

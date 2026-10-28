@@ -227,6 +227,10 @@ class AgentConfig(BaseModel):
     """MCP 服务：服务名 → 连接配置（transport: stdio / streamable_http / sse / websocket）。"""
     mcp_tool_timeout_s: float = 30.0
     """单次 MCP 工具调用超时（秒）。超时或连接中断时把错误说明交给模型，避免整轮对话卡死。"""
+    choice_timeout_s: float = 15.0
+    """模型调用 ask_user 之后，等待用户回答的秒数。超时后这次提问作废，会话上下文保留。"""
+    choice_limit: int = 5
+    """一次提问最多念出几个选项。"""
 
 
 class AppConfig(BaseModel):

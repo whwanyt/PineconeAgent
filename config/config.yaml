@@ -172,6 +172,17 @@ skills:
       duck_ratio: 0.3
       # mpv 输出设备，例如 "alsa/plughw:1,0"；null 为系统默认。默认：null
       audio_device: null
+      # 启动时的播放模式：顺序播放 / 列表循环 / 单曲循环 / 随机播放。默认：顺序播放
+      mode: 顺序播放
+      # 播放列表最多多少首。一次在线取歌最多 50 首，这里是队列上限。默认：100
+      queue_limit: 100
+      # 在线歌曲取播放地址的 MCP 工具（服务名_工具名）。参数 song 是歌曲信息，返回含 url 的 JSON。
+      # 地址会过期，播放列表和歌单只存歌曲信息，快轮到时才取。为空表示不支持在线歌曲。默认：""
+      url_tool: ""
+      # 整张歌单、专辑、榜单、平台热歌和搜索一批歌时允许音乐技能自己调用的 MCP 工具。默认：[]
+      list_tools: []
+      # 单次取播放地址或取歌单的超时（秒）。默认：8
+      online_timeout_s: 8
     weather:
       # 高德开放平台“Web 服务”类型的 Key（https://console.amap.com 申请）。
       # 请设置环境变量 AMAP_KEY，或写在 config.local.yaml 中，不要提交到 git。
@@ -233,3 +244,7 @@ agent:
   # 单次 MCP 工具调用超时（秒）。远程服务断线、限流时不会一直等待，
   # 而是告诉 AI“工具暂时不可用”，由 AI 正常回复。默认：30
   mcp_tool_timeout_s: 30
+  # 模型调用 ask_user 之后，等待语音或文本回答的秒数。超时后这次提问作废（会话上下文保留）。默认：15
+  choice_timeout_s: 15
+  # 一次提问最多念出几个选项。默认：5
+  choice_limit: 5

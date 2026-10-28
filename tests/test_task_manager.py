@@ -107,3 +107,22 @@ async def test_thread_code_sees_token() -> None:
     rt.cancel()
     await rt.wait()
     assert await asyncio.to_thread(exited.wait, 1)
+
+
+async def test_current_follows_the_token_into_foreign_tasks() -> None:
+    """库自己 create_task 出来的协程（如 LangGraph 跑工具）里，current() 仍能找到所在任务。"""
+    tasks = TaskManager(EventBus())
+    seen: list[object] = []
+
+    async def tool() -> None:
+        seen.append(tasks.current())
+        child = tasks.spawn(asyncio.sleep(0), name="技能")
+        seen.append(child.parent_id)
+        await child.wait()
+
+    async def turn() -> None:
+        await asyncio.create_task(tool())
+
+    rt = tasks.spawn(turn(), name="对话")
+    await rt.wait()
+    assert seen == [rt, rt.id]

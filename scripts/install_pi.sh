@@ -12,6 +12,7 @@
 #   GH_PROXY=https://ghfast.top/ bash scripts/install_pi.sh       # 加速 GitHub 模型下载
 #   UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash scripts/install_pi.sh
 #
+# sherpa-onnx 的 Linux wheel 不含 libonnxruntime.so，脚本会按扩展模块的符号版本补上。
 # 脚本可以重复执行：已完成的步骤会被跳过或安全覆盖。
 # =============================================================================
 set -euo pipefail
@@ -25,7 +26,7 @@ for arg in "$@"; do
     --pipewire-aec) WITH_PIPEWIRE_AEC=1 ;;
     --no-service) INSTALL_SERVICE=0 ;;
     --no-models) DOWNLOAD_MODELS=0 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "未知参数：$arg（--help 查看用法）" >&2; exit 1 ;;
   esac
 done
@@ -80,6 +81,8 @@ if ! uv sync --extra aec; then
   sudo apt-get install -y libspeexdsp-dev
   uv sync --extra aec-speex
 fi
+# uv sync 会重装 sherpa-onnx，放在它后面，避免刚拷好的动态库被清掉
+bash scripts/install_onnxruntime.sh
 
 # ---- 3. 语音模型 ----
 if [[ "$DOWNLOAD_MODELS" -eq 1 ]]; then

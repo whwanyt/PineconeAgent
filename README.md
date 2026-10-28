@@ -104,18 +104,33 @@ audio:
 ## 开发环境（Mac / Linux 电脑）
 
 ```bash
-uv sync --extra dev --extra aec       # 安装依赖
+uv sync --extra dev --extra aec --extra tui   # 安装依赖（tui：文本模式的全屏界面）
 bash scripts/download_models.sh        # 下载语音模型
 uv run pytest                          # 运行测试
 uv run ruff check . && uv run ruff format .
 
 # 文本模式：终端输入代替说话，回复仍从扬声器播报，适合调试技能和 AI
 OPENAI_API_KEY=sk-xxx uv run python -m pinecone.main --text
+# 文本模式不用全屏界面，逐行读标准输入（也可以用管道喂指令）
+uv run python -m pinecone.main --text --plain
 # 语音模式
 uv run python -m pinecone.main --debug
 ```
 
 音乐技能需要 libmpv：macOS `brew install mpv`，树莓派由安装脚本处理。
+
+文本模式默认是全屏界面：上面是对话区（你说的话、音箱念的话、候选列表），中间是日志区，
+底部是状态栏（当前状态、追问倒计时、正在运行的任务）和输入框，日志不会再插进正在输入的那一行。
+思考或播报中接着输入会像语音一样打断。没装 `tui` 依赖或输入不是终端时自动退回逐行输入。
+
+| 按键 | 作用 |
+| --- | --- |
+| ↑ / ↓ | 翻之前说过的话（保存在 `data/tui_history.txt`） |
+| Esc | 打断正在思考或播报的这一轮，后台任务不受影响 |
+| F2 | 隐藏 / 显示日志区 |
+| F3 | 只看警告和错误 / 恢复全部 |
+| Ctrl+L | 清空对话区和日志区 |
+| Ctrl+C | 退出（也可以输入 `exit`） |
 
 ## 配置
 
@@ -149,7 +164,9 @@ skills:
 | 时间 | “现在几点”“今天几号”“明天星期几” |
 | 闹钟 | “明天早上7点叫我起床”“10分钟后提醒我关火”“每个工作日7点半的闹钟”“我有哪些闹钟”“取消明天7点的闹钟”“再睡五分钟” |
 | 天气 | “今天天气怎么样”“北京明天天气”“后天会下雨吗”“周末杭州天气”“未来几天天气”“现在外面多少度” |
-| 音乐 | “播放周杰伦的歌”“我想听晴天”“来首歌”“暂停”“下一首”“大声点”“这是什么歌”“停止播放” |
+| 音乐 | “播放周杰伦的歌”“我想听晴天”“来首歌”“暂停”“下一首”“上一首”“大声点”“放大音量”“这是什么歌”“停止播放”“单曲循环”“随机播放” |
+| 播放列表 | “播放列表里有什么”“把晴天加到播放列表”“下一首放十年”“播放第三首”“删掉这首”“清空播放列表” |
+| 歌单 | “收藏这首歌”“播放我喜欢的歌”“新建跑步歌单”“把播放列表保存为跑步歌单”“有哪些歌单” |
 | 任务控制 | “停止”“别说了”“取消备份照片”“停止所有任务”“现在在做什么” |
 | 自定义任务 | “打开客厅的灯”“开始备份”“你的IP是多少”（见 `tasks/`） |
 | AI | 其他任何问题；“记住我喜欢听周杰伦”“我叫什么”“屋里太暗了”（AI 会调用开灯任务） |
@@ -219,6 +236,8 @@ agent:
 
 启动时自动加载，工具名为 `服务名_工具名`；某个服务连不上只会告警，不影响其他功能。
 
+在线音乐在 `skills.settings.music` 里配置 `url_tool`（取播放地址）和 `list_tools`（歌单、专辑、榜单、搜索）。播放列表和歌单只保存歌曲信息，快轮到某一首时才取地址，地址不会写进歌单。
+
 ## 目录结构
 
 ```
@@ -226,7 +245,7 @@ config/        配置文件（config.yaml + 本机覆盖 config.local.yaml）
 tasks/         自定义任务，一个任务一个 YAML
 plugins/       用户技能插件（复制 pinecone/skills/_template）
 models/        语音模型（scripts/download_models.sh 下载，不提交）
-data/          运行数据：闹钟、对话历史、长期记忆（SQLite，不提交）
+data/          运行数据：闹钟、歌单、对话历史、长期记忆（SQLite，不提交）
 scripts/       install_pi.sh 安装脚本、download_models.sh 模型下载
 deploy/        systemd 服务、PipeWire 回声消除配置
 pinecone/
@@ -239,6 +258,7 @@ pinecone/
   skills/                技能框架 + 内置技能（builtin/）+ 模板（_template/）
   tasks/                 自定义任务引擎（加载、动作注册表、执行器）
   agent/                 AI Agent：模型、提示词、记忆（memory/）、工具（tools/）
+  tui/                   文本模式的全屏界面（Textual）：对话区、日志区、状态栏、输入框
 tests/         单元测试（pytest，假模型 / 假声卡，不需要硬件和网络）
 ```
 

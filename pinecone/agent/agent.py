@@ -12,6 +12,13 @@
     片段交给 Speaker，Speaker 内部按标点切句、边合成边播放，首句延迟约等于“首个整句生成时间”。
     工具调用产生的消息不会被念出来。
 
+模型提问：
+    只有模型调用 ``ask_user`` 时才会 ``interrupt``。流结束后如果检查点上还有未回答的提问，
+    把问句接在模型已经说出的话后面。下一句用 ``Command(resume=用户原话)`` 沿用同一个
+    thread_id 继续。正在等回答的提问不能补假的工具结果，否则无法恢复。
+    提问不会一直挂着：追问窗口超时（``Reply.on_expire``）或会话空闲超时后作废，
+    作废时给 ``ask_user`` 补一条“没有回答”的结果，会话历史保持合法。
+
 打断与取消：
     整个流运行在「对话」托管任务中。被唤醒词打断或说“停止”时，任务被取消，
     ``CancelledError`` 会沿着异步生成器传进 LangGraph，模型请求随之中断。
@@ -39,7 +46,15 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 
+from pinecone.agent.question import (
+    PendingQuestion,
+    omit_repeated_lead,
+    pending_from_value,
+)
+from pinecone.agent.tools.ask_user import ask_user_tool
 from pinecone.core.config import AppConfig
 from pinecone.dialog import Reply
 
@@ -49,6 +64,8 @@ from .prompts import build_system_prompt
 logger = logging.getLogger(__name__)
 
 _ERROR_REPLY = "抱歉，我现在连不上大模型，请稍后再试。"
+_INTERRUPTED = "已被用户打断取消"
+_UNANSWERED = "用户没有回答，这次提问已作废。不要继续这项操作，除非用户重新提出。"
 
 
 @dataclass
@@ -57,6 +74,8 @@ class AgentContext:
 
     memories: list[str] = field(default_factory=list)
     """本次对话前检索到的长期记忆。"""
+    hint: str = ""
+    """技能转交时的情况说明（例如本地曲库没找到）。只注入本轮系统提示。"""
 
 
 class Session:
@@ -67,6 +86,16 @@ class Session:
         self._thread_id = ""
         self._last_active = 0.0
 
+    def current(self) -> str:
+        """当前 thread_id。还没有会话时为空字符串，不会因此新建。"""
+        return self._thread_id
+
+    def active(self) -> str:
+        """还没有空闲超时的 thread_id。没有会话或已经超时时为空字符串，不会因此新建。"""
+        if self._thread_id and time.time() - self._last_active <= self._idle_s:
+            return self._thread_id
+        return ""
+
     def thread_id(self) -> str:
         """当前会话 id；空闲超时则开启新会话。"""
         now = time.time()
@@ -74,6 +103,15 @@ class Session:
             self._thread_id = f"voice-{int(now)}"
             logger.info("开启新会话：%s", self._thread_id)
         self._last_active = now
+        return self._thread_id
+
+    def hold(self) -> str:
+        """沿用当前会话并刷新空闲计时。有未完成提问时调用，避免打字或迟疑被切成新会话。"""
+        now = time.time()
+        self._last_active = now
+        if not self._thread_id:
+            self._thread_id = f"voice-{int(now)}"
+            logger.info("开启新会话：%s", self._thread_id)
         return self._thread_id
 
     def reset(self) -> None:
@@ -110,14 +148,19 @@ class VoiceAgent:
         self.session = Session(config.agent.session_idle_min)
         self._memory = memory
         name, persona = config.name, config.agent.persona
-        all_tools = [*tools, *(memory.tools() if memory else [])]
+        all_tools = [
+            ask_user_tool(config.agent.choice_limit),
+            *tools,
+            *(memory.tools() if memory else []),
+        ]
 
         @dynamic_prompt
         def system_prompt(request: ModelRequest) -> str:
-            # 每次调用模型时重新生成：当前时间会变，长期记忆来自运行时上下文
+            # 每次调用模型时重新生成：当前时间、长期记忆、本轮 hint 都可能变
             context = request.runtime.context
             memories = context.memories if isinstance(context, AgentContext) else []
-            return build_system_prompt(name, persona, memories)
+            hint = context.hint if isinstance(context, AgentContext) else ""
+            return build_system_prompt(name, persona, memories, hint=hint)
 
         self._graph = create_agent(
             model,
@@ -128,21 +171,97 @@ class VoiceAgent:
         )
         logger.info("AI 工具：%s", "、".join(t.name for t in all_tools) or "无")
 
-    async def handle(self, text: str) -> Reply:
-        """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。"""
-        return Reply(stream=self._stream(text), follow_up=True)
+    async def handle(self, text: str, *, hint: str | None = None) -> Reply:
+        """处理一句用户文本，返回流式回复（真正的模型调用在播报时才开始）。
 
-    async def _stream(self, text: str) -> AsyncIterator[str]:
-        config: dict[str, Any] = {"configurable": {"thread_id": self.session.thread_id()}}
+        有未完成的 ``ask_user`` 时，这句一律恢复那次提问：说了第几个就选中，
+        否则把原话作为工具结果交给模型。
+
+        Args:
+            text: 用户原话。没有提问时写入会话历史；正在提问时作为 ``interrupt`` 的返回值。
+            hint: 技能转交时的情况说明，只进本轮系统提示，不写进用户消息。
+        """
+        reply = Reply(follow_up=True)
+        if await self.pending_question() is not None:
+            reply.stream = self._drive(Command(resume=text), reply, memory_text=text, repair=False)
+            return reply
+        reply.stream = self._drive(
+            {"messages": [{"role": "user", "content": text}]},
+            reply,
+            memory_text=text,
+            hint=hint,
+            repair=True,
+        )
+        return reply
+
+    async def pending_question(self) -> PendingQuestion | None:
+        """当前会话里还没回答的提问。
+
+        没有会话、会话已经空闲超时或已经回答过时返回 None。空闲超时后下一句会开新会话，
+        旧会话里的提问留在检查点里，不再恢复。
+        """
+        thread = self.session.active()
+        if not thread:
+            return None
+        state = await self._graph.aget_state({"configurable": {"thread_id": thread}})
+        if state is None:
+            return None
+        for item in state.interrupts:
+            pending = pending_from_value(getattr(item, "value", None))
+            if pending is not None:
+                return pending
+        return None
+
+    async def abandon_question(self) -> None:
+        """作废还没回答的提问，会话和上下文保留。没有提问时什么都不做。
+
+        给 ``ask_user`` 补一条“没有回答”的工具结果，图就不再停在提问上，
+        下一句照常作为新的用户消息处理。
+        """
+        if await self.pending_question() is None:
+            return
+        config = {"configurable": {"thread_id": self.session.current()}}
+        logger.info("提问没有回答，作废")
+        await self._answer_missing_tool_calls(config, _UNANSWERED, as_node="tools")
+
+    def _mark_question(self, reply: Reply, pending: PendingQuestion) -> None:
+        """让对话层用更长的追问窗口，并在文本模式打印编号。窗口超时后作废这次提问。"""
+        reply.follow_up = True
+        reply.listen_s = self._config.agent.choice_timeout_s
+        reply.choice_lines = pending.lines
+        reply.on_expire = self.abandon_question
+
+    async def _run_config(self) -> dict[str, Any]:
+        """本轮使用的 thread 配置。有提问时不因空闲超时换会话。"""
+        if await self.pending_question() is not None:
+            thread = self.session.hold()
+        else:
+            thread = self.session.thread_id()
+        return {"configurable": {"thread_id": thread}}
+
+    async def _drive(
+        self,
+        graph_input: dict[str, Any] | Command,
+        reply: Reply,
+        *,
+        memory_text: str,
+        repair: bool,
+        hint: str | None = None,
+    ) -> AsyncIterator[str]:
+        """跑一轮图，产出要念的文本。模型提问暂停时，问句接在已生成文本的后面。"""
+        config = await self._run_config()
         produced = False
+        spoken: list[str] = []
         try:
-            await self._repair_history(config)
-            context = AgentContext(memories=await self._load_memories(text))
+            if repair:
+                await self._repair_history(config)
+            context = AgentContext(memories=await self._load_memories(memory_text), hint=hint or "")
             async for chunk, metadata in self._graph.astream(
-                {"messages": [{"role": "user", "content": text}]},
+                graph_input,
                 config=config,
                 context=context,
                 stream_mode="messages",
+                durability="sync",
             ):
                 if metadata.get("langgraph_node") != "model" or not isinstance(
                     chunk, AIMessageChunk
@@ -151,10 +270,30 @@ class VoiceAgent:
                 piece = _text_of(chunk)
                 if piece:
                     produced = True
+                    spoken.append(piece)
                     yield piece
-        except Exception:
+            pending = await self.pending_question()
+            if pending is not None:
+                self._mark_question(reply, pending)
+                extra = omit_repeated_lead("".join(spoken), pending.prompt)
+                if extra:
+                    produced = True
+                    yield extra
+        except GraphInterrupt:
+            pending = await self.pending_question()
+            if pending is not None:
+                self._mark_question(reply, pending)
+                extra = omit_repeated_lead("".join(spoken), pending.prompt)
+                if extra:
+                    yield extra
+                return
             logger.exception("AI 对话失败")
-            # 已经说了一半时不再追加道歉，避免听起来很奇怪
+            if not produced:
+                yield _ERROR_REPLY
+        except Exception as exc:
+            # 请求失败已经变成给用户的一句道歉。库内部的调用链不再打成整段堆栈。
+            # ``CancelledError`` 不是 ``Exception``，打断时照常取消。
+            logger.warning("AI 对话失败：%s", exc)
             if not produced:
                 yield _ERROR_REPLY
 
@@ -163,25 +302,37 @@ class VoiceAgent:
         return await self._memory.for_prompt(text) if self._memory else []
 
     async def _repair_history(self, config: dict[str, Any]) -> None:
-        """给被打断的工具调用补上结果，保证会话历史合法。"""
+        """给被打断的工具调用补上结果，保证会话历史合法。
+
+        已经干净暂停、正在等用户回答的提问不能补假结果，否则恢复时对不上工具调用。
+        """
+        state = await self._graph.aget_state(config)
+        if state is not None and any(
+            pending_from_value(getattr(item, "value", None)) is not None
+            for item in state.interrupts
+        ):
+            return
+        # 没有工具时图里不存在 tools 节点，以 model 节点的名义写入即可
+        await self._answer_missing_tool_calls(config, _INTERRUPTED, as_node="model")
+
+    async def _answer_missing_tool_calls(
+        self, config: dict[str, Any], content: str, *, as_node: str
+    ) -> None:
+        """给最后一条 AI 消息里还没有结果的工具调用补上 ``content``。"""
         state = await self._graph.aget_state(config)
         messages = state.values.get("messages", []) if state and state.values else []
         if not messages:
             return
         answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
         last = messages[-1]
-        if isinstance(last, AIMessage) and last.tool_calls:
-            missing = [c for c in last.tool_calls if c["id"] not in answered]
-            if missing:
-                logger.info("补全被打断的工具调用：%s", [c["name"] for c in missing])
-                await self._graph.aupdate_state(
-                    config,
-                    {
-                        "messages": [
-                            ToolMessage(content="已被用户打断取消", tool_call_id=c["id"])
-                            for c in missing
-                        ]
-                    },
-                    # 没有工具时图里不存在 tools 节点，以 model 节点的名义写入即可
-                    as_node="model",
-                )
+        if not isinstance(last, AIMessage) or not last.tool_calls:
+            return
+        missing = [c for c in last.tool_calls if c["id"] not in answered]
+        if not missing:
+            return
+        logger.info("补全没有结果的工具调用：%s", [c["name"] for c in missing])
+        await self._graph.aupdate_state(
+            config,
+            {"messages": [ToolMessage(content=content, tool_call_id=c["id"]) for c in missing]},
+            as_node=as_node,
+        )

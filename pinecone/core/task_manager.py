@@ -32,7 +32,7 @@ from enum import StrEnum
 from typing import Any
 
 from pinecone.core.bus import EventBus
-from pinecone.core.cancel import CancelToken, set_current_token
+from pinecone.core.cancel import CancelToken, current_token, set_current_token
 from pinecone.core.events import TaskFinished, TaskStarted
 
 logger = logging.getLogger(__name__)
@@ -345,12 +345,25 @@ class TaskManager:
         return sum(t.cancel(reason) for t in self.list() if t.id not in skip)
 
     def current(self) -> RunningTask | None:
-        """返回调用方所在的托管任务（不在托管任务中时返回 None）。"""
+        """返回调用方所在的托管任务（不在托管任务中时返回 None）。
+
+        先按 asyncio 任务对应；对不上时再按取消令牌找。LangGraph 等库会自己
+        ``create_task`` 来跑工具，那里的 asyncio 任务不是我们的，但 contextvar 会被复制过去，
+        这样 AI 工具里启动的技能任务仍能挂到「对话」下面。
+        """
         try:
             task = asyncio.current_task()
         except RuntimeError:
             return None
-        return next((t for t in self._tasks.values() if t._task is task), None)
+        found = next((t for t in self._tasks.values() if t._task is task), None)
+        if found is not None:
+            return found
+        token = current_token()
+        return next((t for t in self._tasks.values() if t.token is token), None)
+
+    def within(self, rt: RunningTask) -> bool:
+        """调用方是否运行在 ``rt`` 或它的子任务中。"""
+        return rt.id in self._exclude_ids(None)
 
     def _exclude_ids(self, exclude: set[str] | None) -> set[str]:
         """计算不应被取消的任务：额外指定的 + 调用方所在任务 + 它的所有祖先任务。

@@ -51,6 +51,7 @@ class SkillEnv:
         self.tasks = TaskManager(self.bus)
         self.dialog = FakeDialog(self.tasks)
         self.output = FakeOutput()
+        self.tools: dict = {}
         self.manager = SkillManager(self.config, self.tasks, self.make_context)
 
     def make_context(self, name: str) -> SkillContext:
@@ -61,6 +62,7 @@ class SkillEnv:
             tasks=self.tasks,
             dialog=self.dialog,  # type: ignore[arg-type]
             output=self.output,  # type: ignore[arg-type]
+            tools=self.tools,
         )
         ctx.extras["skills"] = self.manager
         return ctx

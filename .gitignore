@@ -8,6 +8,9 @@ __pycache__/
 dist/
 build/
 
+# onnxruntime 预编译库（scripts/install_onnxruntime.sh 下载，体积较大且与平台相关）
+.cache/
+
 # ---- 运行时数据 ----
 # 语音模型体积大（几百 MB），由 scripts/download_models.sh 下载，不入库
 models/*

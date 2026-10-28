@@ -39,7 +39,7 @@ def _to_tool(skills: SkillManager, skill: Skill, spec: ToolSpec) -> BaseTool:
             slots={**spec.fixed_slots, **kwargs},
             source="agent",
         )
-        logger.info("AI 调用工具 %s %s", spec.name, kwargs or "")
+        logger.info("AI 调用工具 %s %s", spec.name, _brief(kwargs))
         result = await skills.execute(skill, intent)
         reply = result.reply
         if reply is None and result.stream is not None:
@@ -54,6 +54,16 @@ def _to_tool(skills: SkillManager, skill: Skill, spec: ToolSpec) -> BaseTool:
         description=spec.description,
         args_schema=spec.args_schema or _NoArgs,
     )
+
+
+def _brief(kwargs: dict[str, Any]) -> str:
+    """日志里的参数摘要。歌单参数可能很长，只留前面一段。"""
+    if not kwargs:
+        return ""
+    text = json.dumps(kwargs, ensure_ascii=False, default=str)
+    if len(text) <= 300:
+        return text
+    return text[:300] + "…"
 
 
 def skill_tools(skills: SkillManager) -> list[BaseTool]:
