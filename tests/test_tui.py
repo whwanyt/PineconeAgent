@@ -40,12 +40,10 @@ class FakeSession:
         self.timer_remaining: float | None = None
         self.interrupted = 0
         self.selected: list[int] = []
-        self.stdin: bool | None = None
         self.shut_down = False
         self._stop = asyncio.Event()
 
-    async def run(self, *, stdin: bool = True) -> None:
-        self.stdin = stdin
+    async def run(self) -> None:
         self.bus.bind_loop(asyncio.get_running_loop())
         self.ready.set()
         await self._stop.wait()
@@ -88,7 +86,6 @@ async def test_input_goes_to_dialog_and_logs_stay_apart(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await backend.ready.wait()
         await pilot.pause()
-        assert backend.stdin is False
         assert not app.query_one("#prompt", Input).disabled
 
         logging.getLogger("pinecone.skills").warning("技能加载慢")

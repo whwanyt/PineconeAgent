@@ -117,7 +117,7 @@ def omit_repeated_lead(already: str, prompt: str) -> str:
 
 
 def numbered_lines(choices: Sequence[Choice], *, limit: int = 5) -> str:
-    """文本模式打印的编号列表。"""
+    """界面上显示的编号列表。语音只念问句，不念这些编号。"""
     shown = _shown(choices, limit)
     return "\n".join(f"{index}. {choice.label}" for index, choice in enumerate(shown, 1))
 

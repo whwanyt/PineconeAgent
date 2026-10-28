@@ -225,7 +225,7 @@ class VoiceAgent:
         await self._answer_missing_tool_calls(config, _UNANSWERED, as_node="tools")
 
     def _mark_question(self, reply: Reply, pending: PendingQuestion) -> None:
-        """让对话层用更长的追问窗口，并在文本模式打印编号。窗口超时后作废这次提问。"""
+        """让对话层用更长的追问窗口，并在界面上显示编号。窗口超时后作废这次提问。"""
         reply.follow_up = True
         reply.listen_s = self._config.agent.choice_timeout_s
         reply.choice_lines = pending.lines

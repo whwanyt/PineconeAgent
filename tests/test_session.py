@@ -55,7 +55,7 @@ def _session(tmp_path: Path) -> Session:
     )
 
 
-async def _no_run(*, stdin: bool = True) -> None:
+async def _no_run() -> None:
     return None
 
 
@@ -95,10 +95,11 @@ async def test_submit_before_attach_fails(tmp_path: Path) -> None:
 async def test_stop_and_run_forward(tmp_path: Path) -> None:
     """退出和启动转给应用自己的回调，界面不直接碰应用对象。"""
     stopped = False
-    seen: dict[str, bool] = {}
+    ran = False
 
-    async def run(*, stdin: bool = True) -> None:
-        seen["stdin"] = stdin
+    async def run() -> None:
+        nonlocal ran
+        ran = True
 
     def stop() -> None:
         nonlocal stopped
@@ -116,5 +117,5 @@ async def test_stop_and_run_forward(tmp_path: Path) -> None:
         stop=stop,
     )
     session.stop()
-    await session.run(stdin=False)
-    assert stopped and seen["stdin"] is False
+    await session.run()
+    assert stopped and ran

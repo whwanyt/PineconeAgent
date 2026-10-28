@@ -87,7 +87,7 @@ class Frontend(Protocol):
         """聆听或追问还剩几秒。"""
         ...
 
-    async def run(self, *, stdin: bool = True) -> None:
+    async def run(self) -> None:
         """启动核心并阻塞到退出。"""
         ...
 
@@ -203,13 +203,12 @@ class Session:
             return
         await self._playback.select(index)
 
-    async def run(self, *, stdin: bool = True) -> None:
+    async def run(self) -> None:
         """启动核心并阻塞到 :meth:`stop`。
 
-        Args:
-            stdin: 是否由核心自己读标准输入。全屏界面自己收输入时传 False。
+        文本由 :meth:`submit_text` 进入，核心自己不读标准输入。
         """
-        await self._run(stdin=stdin)
+        await self._run()
 
     def _require_dialog(self) -> _Dialog:
         if self._dialog is None:

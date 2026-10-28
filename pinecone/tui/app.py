@@ -135,7 +135,7 @@ class PineconeTui(App[None]):
 
     async def _run_backend(self) -> None:
         try:
-            await self._session.run(stdin=False)
+            await self._session.run()
         finally:
             self.exit()
 
