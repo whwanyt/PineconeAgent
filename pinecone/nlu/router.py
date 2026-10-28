@@ -69,7 +69,17 @@ class IntentRouter:
             if result.delegate and self._fallback is not None:
                 logger.info("技能未处理，交给 AI：%s", text)
                 return await self._fallback.handle(text, hint=result.hint)
-            return Reply(text=result.reply, stream=result.stream, follow_up=result.follow_up)
+            # 没有播报时留一句执行说明，对话层把它和用户原话写进同一条会话历史。
+            # 有播报时以实际说出的话为准，说明留空。
+            note = ""
+            if not result.reply and result.stream is None:
+                note = _execution_note(skill, intent)
+            return Reply(
+                text=result.reply,
+                stream=result.stream,
+                follow_up=result.follow_up,
+                note=note,
+            )
 
         if self._fallback is not None:
             logger.info("规则未命中，交给 AI：%s", text)
@@ -93,3 +103,11 @@ class IntentRouter:
         logger.info("没有回答提问，改由技能 %s 处理：%s", hit[0].name, text)
         await agent.abandon_question()
         return False
+
+
+def _execution_note(skill: Skill, intent: Intent) -> str:
+    """技能做完了但没有出声时，写进会话历史的那一句说明。"""
+    details = [f"{key}={value}" for key, value in intent.slots.items() if value not in (None, "")]
+    action = intent.name if not details else f"{intent.name}，{'，'.join(details)}"
+    label = skill.description or skill.name
+    return f"已执行{label}（{action}），没有额外播报。"

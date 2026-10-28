@@ -196,8 +196,11 @@ class App:
         self.skills = SkillManager(self.config, self.tasks, self._make_skill_context)
         await self.skills.load()
         self.router = IntentRouter(self.skills)
-        self.router.set_fallback(await self._build_agent())
+        agent = await self._build_agent()
+        self.router.set_fallback(agent)
         self.dialog.set_handler(self.router)
+        if agent is not None:
+            self.dialog.set_exchange_log(agent)
 
         self.dialog.start()
         self.session.attach(self.dialog, _playback(self.skills.get("music")))

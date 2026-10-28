@@ -42,7 +42,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, dynamic_prompt
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -181,7 +181,7 @@ class VoiceAgent:
             text: 用户原话。没有提问时写入会话历史；正在提问时作为 ``interrupt`` 的返回值。
             hint: 技能转交时的情况说明，只进本轮系统提示，不写进用户消息。
         """
-        reply = Reply(follow_up=True)
+        reply = Reply(follow_up=True, persisted=True)
         if await self.pending_question() is not None:
             reply.stream = self._drive(Command(resume=text), reply, memory_text=text, repair=False)
             return reply
@@ -193,6 +193,29 @@ class VoiceAgent:
             repair=True,
         )
         return reply
+
+    async def record_exchange(self, user: str, assistant: str) -> None:
+        """把一轮没有经过模型的对话写入当前会话。
+
+        规则直接命中技能时，用户原话和实际做的事要和 AI 回合留在同一个 thread，
+        下一句交给模型才能看见。这里只追加消息，不调用模型。
+
+        还有未回答的提问时跳过，避免把停在 ``ask_user`` 上的检查点写坏。
+        可取消。只在事件循环线程调用。
+
+        Args:
+            user: 用户原话。
+            assistant: 播报内容，或没有播报时的执行说明。
+        """
+        if await self.pending_question() is not None:
+            logger.info("还有未回答的提问，这轮不写入会话：%s", user)
+            return
+        config = {"configurable": {"thread_id": self.session.thread_id()}}
+        await self._graph.aupdate_state(
+            config,
+            {"messages": [HumanMessage(content=user), AIMessage(content=assistant)]},
+            as_node="model",
+        )
 
     async def pending_question(self) -> PendingQuestion | None:
         """当前会话里还没回答的提问。

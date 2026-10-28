@@ -47,6 +47,7 @@ from pinecone.core.events import (
     ChoicesShown,
     SpeechEnded,
     SpeechStarted,
+    Spoken,
     StateChanged,
     Transcribed,
     WakeWordDetected,
@@ -91,6 +92,10 @@ class Reply:
     on_expire: OnExpire | None = None
     """追问窗口超时、用户一直没开口时调用。例如 AI 用它作废没人回答的提问，
     免得之后说的每一句都被当成那次提问的回答。"""
+    note: str = ""
+    """没有播报时写入会话历史的执行说明。有播报时以实际说出的话为准。"""
+    persisted: bool = False
+    """处理器已经把这轮写进会话历史（AI 路径）时为真，对话层不再补写。"""
 
 
 class DialogHandler(Protocol):
@@ -102,6 +107,19 @@ class DialogHandler(Protocol):
         Args:
             text: 用户原话。
             hint: 技能转交时的情况说明，不播报，仅提供给兜底 AI。
+        """
+        ...
+
+
+class ExchangeLog(Protocol):
+    """把没经过模型的一轮对话写进和 AI 相同的会话。由 :class:`~pinecone.agent.agent.VoiceAgent` 实现。"""
+
+    async def record_exchange(self, user: str, assistant: str) -> None:
+        """追加一对用户消息和助手消息。不调用模型。可取消。
+
+        Args:
+            user: 用户原话。
+            assistant: 实际播报，或没有播报时的执行说明。
         """
         ...
 
@@ -150,6 +168,7 @@ class DialogController:
         self._turn_task: RunningTask | None = None
         # 每次状态变化都会 set，主动播报靠它等回复念完
         self._state_changed = asyncio.Event()
+        self._exchange_log: ExchangeLog | None = None
 
         barge = config.audio.barge_in
         # VAD 打断必须在回声消除生效时才启用，否则扬声器的声音会让音箱自己打断自己
@@ -176,6 +195,10 @@ class DialogController:
     def set_handler(self, handler: DialogHandler) -> None:
         """替换指令处理器（技能路由器初始化完成后调用）。"""
         self._handler = handler
+
+    def set_exchange_log(self, log: ExchangeLog | None) -> None:
+        """接上会话历史。规则直接命中技能的回合会补写到这里，和 AI 对话留在一起。"""
+        self._exchange_log = log
 
     # ================================================================== 对外接口
 
@@ -330,27 +353,32 @@ class DialogController:
         await self._respond(text, turn)
 
     async def _respond(self, text: str, turn: int) -> None:
-        """调用处理器并播报回复。出错时播报兜底提示。"""
-        try:
-            reply = await self._handler.handle(text)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("处理指令出错：%s", text)
-            reply = Reply(text="抱歉，我出了点问题，请稍后再试。", follow_up=False)
-        if turn != self._turn:
-            return
+        """调用处理器并播报回复。出错时播报兜底提示。
 
-        if reply.text or reply.stream is not None:
-            await self._state.transition(S.SPEAKING, "回复")
-            if reply.stream is not None:
-                await self._speaker.say_stream(reply.stream)
-            else:
-                await self._speaker.say(reply.text or "")
-        if turn != self._turn:
-            return
-        if reply.choice_lines:
-            await self._bus.publish(ChoicesShown(lines=reply.choice_lines))
+        这一轮里说出的话（技能自己播的、以及这里接着播的回复）收进列表。
+        处理器没有自己写入会话时，补一对用户原话和这些播报，和 AI 回合放在一起。
+        轮次已经变了（被打断）则不写。
+        """
+        spoken: list[str] = []
+        unsubscribe = self._bus.subscribe(Spoken, lambda event: spoken.append(event.text))
+        try:
+            reply = await self._reply(text)
+            if turn != self._turn:
+                return
+
+            if reply.text or reply.stream is not None:
+                await self._state.transition(S.SPEAKING, "回复")
+                if reply.stream is not None:
+                    await self._speaker.say_stream(reply.stream)
+                else:
+                    await self._speaker.say(reply.text or "")
+            if turn != self._turn:
+                return
+            if reply.choice_lines:
+                await self._bus.publish(ChoicesShown(lines=reply.choice_lines))
+            await self._remember(text, reply, spoken)
+        finally:
+            unsubscribe()
 
         follow_up_s = (
             reply.listen_s if reply.listen_s is not None else self._config.dialog.follow_up_s
@@ -361,6 +389,24 @@ class DialogController:
             self._arm_timer(follow_up_s, lambda: self._on_follow_up_timeout(turn, reply.on_expire))
         else:
             await self._state.transition(S.IDLE, "对话结束")
+
+    async def _reply(self, text: str) -> Reply:
+        """调用处理器。出错时换成一句道歉，不把异常抛出这一轮。"""
+        try:
+            return await self._handler.handle(text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("处理指令出错：%s", text)
+            return Reply(text="抱歉，我出了点问题，请稍后再试。", follow_up=False)
+
+    async def _remember(self, text: str, reply: Reply, spoken: list[str]) -> None:
+        """规则直达的回合补进会话历史。AI 路径已经写过时什么都不做。"""
+        if reply.persisted or self._exchange_log is None:
+            return
+        heard = "".join(spoken).strip()
+        assistant = heard or (reply.text or "").strip() or reply.note.strip() or "已执行。"
+        await self._exchange_log.record_exchange(text, assistant)
 
     async def _listen_again(self, turn: int) -> None:
         """识别结果为空：多半是咳嗽、关门声或提示音，回到追问窗口再等一次。
