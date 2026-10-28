@@ -66,7 +66,7 @@ async def _amain(args: argparse.Namespace) -> None:
         from pinecone.tui.native import native_output_to_log
 
         with native_output_to_log():
-            await PineconeTui(app).run_async()
+            await PineconeTui(app.session).run_async()
     else:
         await app.run()
 

@@ -10,6 +10,7 @@
               └─ DialogController（订阅事件，驱动整个对话流程）
                     └─ IntentRouter ─▶ SkillManager（规则匹配技能）
                                    └─▶ VoiceAgent（规则未命中时的 AI 兜底）
+    Session（交互门面，TUI / 以后的 HTTP 只走这里）
 
 两种运行模式：
     - 语音模式（默认）：麦克风 + 唤醒词 + 识别；
@@ -42,6 +43,7 @@ from pinecone.core.events import ChoicesShown
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
 from pinecone.dialog import DialogController, EchoHandler
+from pinecone.interaction import Session
 from pinecone.nlu.router import IntentRouter
 from pinecone.skills import SkillContext, SkillManager
 from pinecone.speech.tts import Speaker, create_tts
@@ -69,6 +71,17 @@ class App:
         self._resources = contextlib.AsyncExitStack()
         # 技能和 MCP 共用这份表。技能先加载，MCP 工具在 _build_agent 里填进来。
         self.tools: dict[str, BaseTool] = {}
+        # 界面只拿这个门面。对话控制器在 setup 里接上，播放控制在启用音乐后再接。
+        self.session = Session(
+            bus=self.bus,
+            state=self.state,
+            tasks=self.tasks,
+            ready=self.ready,
+            assistant_name=config.name,
+            data_path=config.data_path,
+            run=self.run,
+            stop=self.stop,
+        )
 
     def _build_voice_frontend(self) -> DialogController:
         """创建麦克风、回声消除、唤醒词、VAD、识别，并组装对话控制器。"""
@@ -193,6 +206,7 @@ class App:
         self.dialog.set_handler(self.router)
 
         self.dialog.start()
+        self.session.attach(self.dialog)
         self.output.start()
         if self.mic is not None:
             self.mic.start()

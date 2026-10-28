@@ -94,6 +94,22 @@ class ChoicesShown(Event):
     lines: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class PlaylistUpdated(Event):
+    """当前播放队列发生了变化。
+
+    只在曲目、当前位置、播放模式或暂停状态真正变化时发布，供界面刷新。
+    点选切歌不走这条事件的反方向：界面通过会话门面发命令，技能改完队列后再发布。
+
+    ``tracks`` 是按播放顺序排列的曲目名。``current`` 从 1 数，没有正在播放的曲目时为 0。
+    """
+
+    tracks: tuple[str, ...]
+    current: int
+    mode: str
+    paused: bool
+
+
 # ---- 任务管理 ----
 
 
