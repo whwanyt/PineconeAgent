@@ -95,6 +95,20 @@ class ChoicesShown(Event):
 
 
 @dataclass(frozen=True, kw_only=True)
+class PlaylistSnapshot:
+    """某一时刻的播放队列。
+
+    界面启动时先读这一帧，之后只听 :class:`PlaylistUpdated`。
+    ``current`` 从 1 数，没有正在播放的曲目时为 0。
+    """
+
+    tracks: tuple[str, ...] = ()
+    current: int = 0
+    mode: str = ""
+    paused: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
 class PlaylistUpdated(Event):
     """当前播放队列发生了变化。
 

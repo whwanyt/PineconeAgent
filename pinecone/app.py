@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from typing import cast
 
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -39,12 +40,23 @@ from pinecone.core.config import AppConfig
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
 from pinecone.dialog import DialogController, EchoHandler
-from pinecone.interaction import Session
+from pinecone.interaction import Playback, Session
 from pinecone.nlu.router import IntentRouter
 from pinecone.skills import SkillContext, SkillManager
 from pinecone.speech.tts import Speaker, create_tts
 
 logger = logging.getLogger(__name__)
+
+
+def _playback(skill: object | None) -> Playback | None:
+    """音乐技能实现了快照和选曲时，把它交给会话门面。其他技能忽略。"""
+    if skill is None:
+        return None
+    if not callable(getattr(skill, "snapshot", None)) or not callable(
+        getattr(skill, "select", None)
+    ):
+        return None
+    return cast(Playback, skill)
 
 
 class App:
@@ -66,7 +78,7 @@ class App:
         self._resources = contextlib.AsyncExitStack()
         # 技能和 MCP 共用这份表。技能先加载，MCP 工具在 _build_agent 里填进来。
         self.tools: dict[str, BaseTool] = {}
-        # 界面只拿这个门面。对话控制器在 setup 里接上，播放控制在启用音乐后再接。
+        # 界面只拿这个门面。对话控制器和音乐播放在 setup 里接上。
         self.session = Session(
             bus=self.bus,
             state=self.state,
@@ -188,7 +200,7 @@ class App:
         self.dialog.set_handler(self.router)
 
         self.dialog.start()
-        self.session.attach(self.dialog)
+        self.session.attach(self.dialog, _playback(self.skills.get("music")))
         self.output.start()
         if self.mic is not None:
             self.mic.start()

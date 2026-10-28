@@ -13,7 +13,7 @@ pytest.importorskip("textual")
 from textual.widgets import Input, RichLog  # noqa: E402
 
 from pinecone.core.bus import EventBus  # noqa: E402
-from pinecone.core.events import ChoicesShown, Spoken, Transcribed  # noqa: E402
+from pinecone.core.events import ChoicesShown, PlaylistUpdated, Spoken, Transcribed  # noqa: E402
 from pinecone.core.state import AssistantState as S  # noqa: E402
 from pinecone.core.state import StateMachine  # noqa: E402
 from pinecone.core.task_manager import TaskKind, TaskManager  # noqa: E402
@@ -22,6 +22,7 @@ from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
 from pinecone.tui.logs import LogView  # noqa: E402
 from pinecone.tui.native import native_output_to_log  # noqa: E402
+from pinecone.tui.playlist import PlaylistView, TrackRow  # noqa: E402
 from pinecone.tui.prompt import PromptInput  # noqa: E402
 from pinecone.tui.status import StatusBar  # noqa: E402
 
@@ -40,6 +41,7 @@ class FakeSession:
         self.timer_remaining: float | None = None
         self.interrupted = 0
         self.selected: list[int] = []
+        self.queue = PlaylistSnapshot()
         self.shut_down = False
         self._stop = asyncio.Event()
 
@@ -61,7 +63,7 @@ class FakeSession:
         self.interrupted += 1
 
     def playlist(self) -> PlaylistSnapshot:
-        return PlaylistSnapshot()
+        return self.queue
 
     async def select_track(self, index: int) -> None:
         self.selected.append(index)
@@ -224,6 +226,56 @@ async def test_history_survives_restart(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("up")
         assert app.query_one(PromptInput).value == "明天天气"
+
+
+async def test_playlist_toggle_select_and_follow(tmp_path: Path) -> None:
+    """F4 隐藏播放列表；回车切到高亮的那首；没焦点时高亮跟着当前曲，选歌时不拽走光标。"""
+    backend = FakeSession(tmp_path)
+    backend.queue = PlaylistSnapshot(
+        tracks=("晴天", "稻香"), current=1, mode="顺序播放", paused=False
+    )
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        view = app.query_one(PlaylistView)
+        rows = list(view.query(TrackRow))
+        assert [row.track_title for row in rows] == ["晴天", "稻香"]
+        assert rows[0].current and view.index == 0
+
+        await pilot.press("f4")
+        assert not view.display and not view.can_focus
+        await pilot.press("f4")
+        assert view.display and view.can_focus
+
+        await pilot.press("tab")
+        assert app.focused is view
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert backend.selected == [2]
+
+        app.query_one(PromptInput).focus()
+        await backend.bus.publish(
+            PlaylistUpdated(tracks=("晴天", "稻香"), current=2, mode="顺序播放", paused=False)
+        )
+        await pilot.pause()
+        assert view.index == 1 and list(view.query(TrackRow))[1].current
+
+        view.focus()
+        await pilot.press("up")
+        await backend.bus.publish(
+            PlaylistUpdated(
+                tracks=("晴天", "稻香", "十年"), current=2, mode="顺序播放", paused=False
+            )
+        )
+        await pilot.pause()
+        assert view.index == 0
+        assert [row.track_title for row in view.query(TrackRow)] == ["晴天", "稻香", "十年"]
+
+        app.query_one(PromptInput).focus()
+        await submit(pilot, "现在几点")
+        await pilot.press("up")
+        assert app.query_one(PromptInput).value == "现在几点"
 
 
 async def test_escape_interrupts_and_ctrl_l_clears(tmp_path: Path) -> None:

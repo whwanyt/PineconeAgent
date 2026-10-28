@@ -8,13 +8,15 @@ from collections.abc import Callable
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Input
+from textual.widgets import Footer, Input, ListView
 
-from pinecone.core.events import ChoicesShown, Spoken, Transcribed
+from pinecone.core.events import ChoicesShown, PlaylistUpdated, Spoken, Transcribed
 from pinecone.interaction import Frontend
 from pinecone.tui.conversation import ConversationView
 from pinecone.tui.logs import LogView, TuiLogHandler
+from pinecone.tui.playlist import PlaylistView
 from pinecone.tui.prompt import PromptInput
 from pinecone.tui.status import StatusBar
 
@@ -33,10 +35,23 @@ class PineconeTui(App[None]):
 
     TITLE = "PineconeAgent"
     CSS = """
+    #stage {
+        height: 1fr;
+    }
     #conversation {
+        width: 1fr;
         height: 1fr;
         border: round $primary;
         padding: 0 1;
+    }
+    #playlist {
+        width: 32;
+        height: 1fr;
+        border: round $accent;
+        padding: 0 1;
+    }
+    #playlist.hidden {
+        display: none;
     }
     #log {
         height: 40%;
@@ -59,6 +74,7 @@ class PineconeTui(App[None]):
         Binding("ctrl+l", "clear", "清屏", priority=True),
         Binding("f2", "toggle_log", "日志"),
         Binding("f3", "warnings_only", "只看警告"),
+        Binding("f4", "toggle_playlist", "播放列表"),
     ]
 
     def __init__(self, session: Frontend) -> None:
@@ -70,7 +86,9 @@ class PineconeTui(App[None]):
         self._unsubscribe: list[Callable[[], None]] = []
 
     def compose(self) -> ComposeResult:
-        yield ConversationView(self._session.assistant_name, id="conversation")
+        with Horizontal(id="stage"):
+            yield ConversationView(self._session.assistant_name, id="conversation")
+            yield PlaylistView()
         yield LogView(id="log")
         yield StatusBar(id="status")
         yield PromptInput(
@@ -87,6 +105,10 @@ class PineconeTui(App[None]):
         # 很快结束的任务会来不及登记、永远留在任务列表里。换回默认，和树莓派（3.11）上一致
         asyncio.get_running_loop().set_task_factory(None)
         self.query_one("#conversation").border_title = "对话"
+        self.query_one(PlaylistView).border_title = "播放列表"
+        # 对话区和日志区不进 Tab 顺序，Tab 只在输入框和播放列表之间切换
+        self.query_one(ConversationView).can_focus = False
+        self.query_one(LogView).can_focus = False
         self._update_log_title()
         handler = TuiLogHandler(self._write_log, asyncio.get_running_loop())
         handler.setFormatter(logging.Formatter(_LOG_FORMAT, _DATE_FORMAT))
@@ -100,6 +122,7 @@ class PineconeTui(App[None]):
             bus.subscribe(Transcribed, lambda e: conversation.add_user(e.text)),
             bus.subscribe(Spoken, lambda e: conversation.add_spoken(e.text, e.utterance)),
             bus.subscribe(ChoicesShown, lambda e: conversation.add_choices(e.lines)),
+            bus.subscribe(PlaylistUpdated, self._on_playlist),
         ]
         self.run_worker(self._run_backend(), name="pinecone")
         self.run_worker(self._enable_input(), name="ready")
@@ -125,6 +148,15 @@ class PineconeTui(App[None]):
     def action_toggle_log(self) -> None:
         self.query_one(LogView).toggle_class("hidden")
 
+    def action_toggle_playlist(self) -> None:
+        """显示或隐藏右侧播放列表。藏起来时不再占用 Tab。"""
+        view = self.query_one(PlaylistView)
+        focused = view.has_focus
+        view.toggle_class("hidden")
+        view.can_focus = bool(view.display)
+        if not view.display and focused:
+            self.query_one(PromptInput).focus()
+
     def action_warnings_only(self) -> None:
         self.query_one(LogView).toggle_warnings_only()
         self._update_log_title()
@@ -146,6 +178,8 @@ class PineconeTui(App[None]):
         prompt.disabled = False
         prompt.focus()
         self.query_one(StatusBar).watch(self._session)
+        snap = self._session.playlist()
+        await self.query_one(PlaylistView).sync(snap.tracks, snap.current)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -160,6 +194,23 @@ class PineconeTui(App[None]):
         task = asyncio.create_task(self._send(text))
         self._sending.add(task)
         task.add_done_callback(self._sending.discard)
+
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """播放列表里回车：从高亮的那一首开始放。"""
+        if event.list_view.id != "playlist":
+            return
+        task = asyncio.create_task(self._select(event.index + 1))
+        self._sending.add(task)
+        task.add_done_callback(self._sending.discard)
+
+    async def _select(self, index: int) -> None:
+        try:
+            await self._session.select_track(index)
+        except Exception:
+            logger.exception("切换曲目出错：第 %s 首", index)
+
+    async def _on_playlist(self, event: PlaylistUpdated) -> None:
+        await self.query_one(PlaylistView).sync(event.tracks, event.current)
 
     async def _send(self, text: str) -> None:
         try:

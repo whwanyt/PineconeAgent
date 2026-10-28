@@ -17,27 +17,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from pinecone.core.bus import EventBus
+from pinecone.core.events import PlaylistSnapshot
 from pinecone.core.state import StateMachine
 from pinecone.core.task_manager import TaskManager
-
-
-@dataclass(frozen=True, kw_only=True)
-class PlaylistSnapshot:
-    """某一时刻的播放队列，给界面先画一帧。
-
-    之后的变化走 :class:`~pinecone.core.events.PlaylistUpdated`，不要轮询这个快照。
-    ``current`` 从 1 数，没有正在播放的曲目时为 0。
-    """
-
-    tracks: tuple[str, ...] = ()
-    current: int = 0
-    mode: str = ""
-    paused: bool = False
 
 
 class Playback(Protocol):
