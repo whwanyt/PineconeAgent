@@ -1,4 +1,4 @@
-"""全屏文本界面测试（使用假后端，不需要声卡和模型）。"""
+"""全屏界面测试（使用假会话门面，不需要声卡和模型）。"""
 
 import asyncio
 import logging
@@ -13,51 +13,39 @@ pytest.importorskip("textual")
 from textual.widgets import Input, RichLog  # noqa: E402
 
 from pinecone.core.bus import EventBus  # noqa: E402
-from pinecone.core.config import AppConfig  # noqa: E402
-from pinecone.core.events import ChoicesShown, Spoken, Transcribed  # noqa: E402
+from pinecone.core.events import ChoicesShown, PlaylistUpdated, Spoken, Transcribed  # noqa: E402
 from pinecone.core.state import AssistantState as S  # noqa: E402
 from pinecone.core.state import StateMachine  # noqa: E402
 from pinecone.core.task_manager import TaskKind, TaskManager  # noqa: E402
+from pinecone.interaction import PlaylistSnapshot  # noqa: E402
 from pinecone.tui import PineconeTui  # noqa: E402
 from pinecone.tui.conversation import ConversationView  # noqa: E402
 from pinecone.tui.logs import LogView  # noqa: E402
 from pinecone.tui.native import native_output_to_log  # noqa: E402
+from pinecone.tui.playlist import PlaylistView, TrackRow  # noqa: E402
 from pinecone.tui.prompt import PromptInput  # noqa: E402
 from pinecone.tui.status import StatusBar  # noqa: E402
 
 
-class FakeDialog:
-    def __init__(self, bus: EventBus) -> None:
-        self.bus = bus
-        self.texts: list[str] = []
-        self.timer_remaining: float | None = None
-        self.interrupted = 0
-
-    async def interrupt(self, reason: str = "user") -> int:
-        self.interrupted += 1
-        return 0
-
-    async def handle_text(self, text: str) -> None:
-        self.texts.append(text)
-        await self.bus.publish(Transcribed(text=text))
-
-
-class FakeBackend:
-    """按 pinecone.app.App 的接口：run 启动并等到 stop，启动完成时 set ready。"""
+class FakeSession:
+    """按会话门面的接口：run 启动并等到 stop，启动完成时 set ready。"""
 
     def __init__(self, data_dir: Path) -> None:
-        self.config = AppConfig(data_dir=str(data_dir))
+        self.assistant_name = "小派"
+        self.data_path = data_dir
         self.bus = EventBus()
         self.state = StateMachine(self.bus)
         self.tasks = TaskManager(self.bus)
-        self.dialog = FakeDialog(self.bus)
         self.ready = asyncio.Event()
-        self.stdin: bool | None = None
+        self.texts: list[str] = []
+        self.timer_remaining: float | None = None
+        self.interrupted = 0
+        self.selected: list[int] = []
+        self.queue = PlaylistSnapshot()
         self.shut_down = False
         self._stop = asyncio.Event()
 
-    async def run(self, *, stdin: bool = True) -> None:
-        self.stdin = stdin
+    async def run(self) -> None:
         self.bus.bind_loop(asyncio.get_running_loop())
         self.ready.set()
         await self._stop.wait()
@@ -66,6 +54,19 @@ class FakeBackend:
 
     def stop(self) -> None:
         self._stop.set()
+
+    async def submit_text(self, text: str) -> None:
+        self.texts.append(text)
+        await self.bus.publish(Transcribed(text=text))
+
+    async def interrupt(self) -> None:
+        self.interrupted += 1
+
+    def playlist(self) -> PlaylistSnapshot:
+        return self.queue
+
+    async def select_track(self, index: int) -> None:
+        self.selected.append(index)
 
 
 def lines(app: PineconeTui, widget_id: str) -> list[str]:
@@ -81,18 +82,17 @@ async def submit(pilot, text: str) -> None:
 
 
 async def test_input_goes_to_dialog_and_logs_stay_apart(tmp_path: Path) -> None:
-    """输入框启动后可用；回车交给对话控制器；日志显示在日志区，不进对话区。"""
-    backend = FakeBackend(tmp_path)
+    """输入框启动后可用；回车交给会话门面；日志显示在日志区，不进对话区。"""
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
         await pilot.pause()
-        assert backend.stdin is False
         assert not app.query_one("#prompt", Input).disabled
 
         logging.getLogger("pinecone.skills").warning("技能加载慢")
         await submit(pilot, "现在几点")
-        assert backend.dialog.texts == ["现在几点"]
+        assert backend.texts == ["现在几点"]
         assert app.query_one("#prompt", Input).value == ""
         assert any("现在几点" in line for line in lines(app, "#conversation"))
         assert any("技能加载慢" in line for line in lines(app, "#log"))
@@ -101,7 +101,7 @@ async def test_input_goes_to_dialog_and_logs_stay_apart(tmp_path: Path) -> None:
 
 async def test_quit_waits_for_backend_shutdown(tmp_path: Path) -> None:
     """Ctrl+C 只请求后端停止，后端关完再退出界面；退出后不再接管日志。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -113,20 +113,20 @@ async def test_quit_waits_for_backend_shutdown(tmp_path: Path) -> None:
 
 
 async def test_exit_command_stops_backend(tmp_path: Path) -> None:
-    """输入 exit 与 Ctrl+C 一样退出，不交给对话控制器。"""
-    backend = FakeBackend(tmp_path)
+    """输入 exit 与 Ctrl+C 一样退出，不交给会话门面。"""
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
         await pilot.pause()
         await submit(pilot, "exit")
         await asyncio.wait_for(backend._stop.wait(), 1)
-    assert backend.dialog.texts == []
+    assert backend.texts == []
 
 
 async def test_conversation_merges_one_utterance(tmp_path: Path) -> None:
     """同一次播报的句子拼成一条；新的播报、候选列表各占一条；用户的话以识别结果为准。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -147,7 +147,7 @@ async def test_conversation_merges_one_utterance(tmp_path: Path) -> None:
 
 async def test_log_filter_and_toggle(tmp_path: Path) -> None:
     """F3 只看警告和错误、再按恢复全部，之前的日志不丢；F2 隐藏和显示日志区。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -174,7 +174,7 @@ async def test_log_filter_and_toggle(tmp_path: Path) -> None:
 
 async def test_status_bar_shows_state_countdown_and_tasks(tmp_path: Path) -> None:
     """状态栏显示当前状态、追问倒计时和技能任务，不列对话流程自己的任务。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -195,14 +195,14 @@ async def test_status_bar_shows_state_countdown_and_tasks(tmp_path: Path) -> Non
         assert "思考中" in text() and "任务：音乐" in text() and "对话" not in text()
 
         await backend.state.transition(S.FOLLOW_UP)
-        backend.dialog.timer_remaining = 7.6
+        backend.timer_remaining = 7.6
         assert "等待追问" in text() and "8s" in text()
         await backend.tasks.shutdown()
 
 
 async def test_history_survives_restart(tmp_path: Path) -> None:
     """↑↓ 翻历史，翻回来恢复正在输入的内容；历史存在数据目录，重启后还在。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -219,7 +219,7 @@ async def test_history_survives_restart(tmp_path: Path) -> None:
         await pilot.press("down", "down")
         assert prompt.value == "打到一半"
 
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
@@ -228,16 +228,66 @@ async def test_history_survives_restart(tmp_path: Path) -> None:
         assert app.query_one(PromptInput).value == "明天天气"
 
 
+async def test_playlist_toggle_select_and_follow(tmp_path: Path) -> None:
+    """F4 隐藏播放列表；回车切到高亮的那首；没焦点时高亮跟着当前曲，选歌时不拽走光标。"""
+    backend = FakeSession(tmp_path)
+    backend.queue = PlaylistSnapshot(
+        tracks=("晴天", "稻香"), current=1, mode="顺序播放", paused=False
+    )
+    app = PineconeTui(backend)
+    async with app.run_test() as pilot:
+        await backend.ready.wait()
+        await pilot.pause()
+        view = app.query_one(PlaylistView)
+        rows = list(view.query(TrackRow))
+        assert [row.track_title for row in rows] == ["晴天", "稻香"]
+        assert rows[0].current and view.index == 0
+
+        await pilot.press("f4")
+        assert not view.display and not view.can_focus
+        await pilot.press("f4")
+        assert view.display and view.can_focus
+
+        await pilot.press("tab")
+        assert app.focused is view
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert backend.selected == [2]
+
+        app.query_one(PromptInput).focus()
+        await backend.bus.publish(
+            PlaylistUpdated(tracks=("晴天", "稻香"), current=2, mode="顺序播放", paused=False)
+        )
+        await pilot.pause()
+        assert view.index == 1 and list(view.query(TrackRow))[1].current
+
+        view.focus()
+        await pilot.press("up")
+        await backend.bus.publish(
+            PlaylistUpdated(
+                tracks=("晴天", "稻香", "十年"), current=2, mode="顺序播放", paused=False
+            )
+        )
+        await pilot.pause()
+        assert view.index == 0
+        assert [row.track_title for row in view.query(TrackRow)] == ["晴天", "稻香", "十年"]
+
+        app.query_one(PromptInput).focus()
+        await submit(pilot, "现在几点")
+        await pilot.press("up")
+        assert app.query_one(PromptInput).value == "现在几点"
+
+
 async def test_escape_interrupts_and_ctrl_l_clears(tmp_path: Path) -> None:
     """Esc 打断这一轮；Ctrl+L 清空对话区和日志区。"""
-    backend = FakeBackend(tmp_path)
+    backend = FakeSession(tmp_path)
     app = PineconeTui(backend)
     async with app.run_test() as pilot:
         await backend.ready.wait()
         await pilot.pause()
         await submit(pilot, "讲个长故事")
         await pilot.press("escape")
-        assert backend.dialog.interrupted == 1
+        assert backend.interrupted == 1
 
         await pilot.press("ctrl+l")
         await pilot.pause()
@@ -266,7 +316,7 @@ async def test_backend_tasks_are_not_eager(tmp_path: Path) -> None:
     loop = asyncio.get_running_loop()
     loop.set_task_factory(asyncio.eager_task_factory)  # 和 Textual 的 run_async 一样
     try:
-        backend = FakeBackend(tmp_path)
+        backend = FakeSession(tmp_path)
         app = PineconeTui(backend)
         async with app.run_test() as pilot:
             await backend.ready.wait()

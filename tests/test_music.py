@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage
 
-from pinecone.core.events import StateChanged
+from pinecone.core.events import PlaylistUpdated, StateChanged
 from pinecone.core.state import AssistantState
 from pinecone.dialog import Reply
 from pinecone.nlu.router import IntentRouter
@@ -176,6 +176,40 @@ async def test_play_and_control(music, skill_env: SkillEnv) -> None:
     await asyncio.sleep(0.05)
     assert fake.state is PlayState.IDLE
     assert skill_env.tasks.list() == []
+
+
+async def test_playlist_event_and_select(music, skill_env: SkillEnv) -> None:
+    """队列或暂停变化才发事件；点选序号直接切歌，不经过对话。"""
+    router, skill, _fake = music
+    seen: list[PlaylistUpdated] = []
+    skill_env.bus.subscribe(PlaylistUpdated, lambda event: seen.append(event))
+
+    await router.handle("播放周杰伦的歌")
+    assert seen[-1].current == 1 and len(seen[-1].tracks) == 2 and not seen[-1].paused
+    quiet = len(seen)
+
+    await router.handle("这是什么歌")
+    assert len(seen) == quiet
+
+    await router.handle("暂停")
+    assert len(seen) == quiet + 1 and seen[-1].paused
+    await router.handle("暂停")
+    assert len(seen) == quiet + 1
+
+    await skill.select(2)
+    assert skill._queue.position == 2
+    assert seen[-1].current == 2 and not seen[-1].paused
+
+    held = len(seen)
+    await skill.select(9)
+    assert skill._queue.position == 2 and len(seen) == held
+
+    await router.handle("停止")
+    await asyncio.sleep(0.05)
+    assert seen[-1].tracks == () and seen[-1].current == 0
+    stopped = len(seen)
+    await skill.select(1)
+    assert len(seen) == stopped
 
 
 async def test_station_and_not_found(music) -> None:

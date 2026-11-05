@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pinecone.core.events import PlaylistSnapshot, PlaylistUpdated
 from pinecone.core.task_manager import RunningTask
 from pinecone.skills import Intent, Skill, SkillContext, SkillResult, ToolSpec, register_skill
 
@@ -248,6 +249,8 @@ class MusicSkill(Skill):
             ctx.logger.warning("音乐播放器不可用（%s），请安装 mpv / libmpv", exc)
             self._player = None
         self._unsubscribe = ctx.on_state_change(self._on_state_change)
+        # 和当前快照相同的变化不再发布，避免 0.25 秒轮询把界面刷个不停
+        self._playlist_snap = self.snapshot()
 
     async def teardown(self) -> None:
         self._unsubscribe()
@@ -271,6 +274,54 @@ class MusicSkill(Skill):
         return music_tools(url_tool=self._url_tool, list_tools=sorted(self._list_tools))
 
     async def handle(self, ctx: SkillContext, intent: Intent) -> SkillResult:
+        """处理音乐意图。队列或暂停状态变了就通知界面。
+
+        可取消。取消过程中不再发布事件，避免把半截队列写出去。
+        只在事件循环线程调用。
+        """
+        try:
+            return await self._respond(ctx, intent)
+        finally:
+            task = asyncio.current_task()
+            if task is None or not task.cancelling():
+                await self._emit_playlist()
+
+    def snapshot(self) -> PlaylistSnapshot:
+        """当前播放队列。只读，不改播放位置。只在事件循环线程调用。"""
+        return PlaylistSnapshot(
+            tracks=tuple(item.label for item in self._queue.tracks),
+            current=self._queue.position,
+            mode=self._queue.mode.value,
+            paused=bool(self._player and self._player.paused),
+        )
+
+    async def select(self, index: int) -> None:
+        """从第 ``index`` 首开始放（从 1 数）。
+
+        给界面点选用，不经过意图路由，因此不会打断对话，也不会记成一句用户话。
+        没在播放时什么都不做。可取消。只在事件循环线程调用。
+        """
+        if self._player is None or self._queue.current is None:
+            return
+        await self._jump_to(index)
+        await self._emit_playlist()
+
+    async def _emit_playlist(self) -> None:
+        """和上次发布的快照不同才发 :class:`PlaylistUpdated`。"""
+        snap = self.snapshot()
+        if snap == self._playlist_snap:
+            return
+        self._playlist_snap = snap
+        await self._ctx.publish(
+            PlaylistUpdated(
+                tracks=snap.tracks,
+                current=snap.current,
+                mode=snap.mode,
+                paused=snap.paused,
+            )
+        )
+
+    async def _respond(self, ctx: SkillContext, intent: Intent) -> SkillResult:
         if intent.name in {"play", "play_playlist", "enqueue", "insert_next"}:
             return await self._handle_play(intent)
         if intent.name in _WHILE_PLAYING and not self.playing:
@@ -810,18 +861,27 @@ class MusicSkill(Skill):
                 if player.state is PlayState.PLAYING:
                     await self._prefetch()
                     continue
+                advanced = False
                 async with self._lock:
                     state = player.state
                     if state is PlayState.PLAYING:
                         continue
                     if state is PlayState.IDLE or not await self._advance(state):
                         return
+                    advanced = True
+                # 锁外发布：订阅者若再调本技能，不会和播放锁死锁
+                if advanced:
+                    await self._emit_playlist()
         finally:
-            if self._task is me:
+            stopped = self._task is me
+            if stopped:
                 self._task = None
                 self._queue.clear()
                 if self._player is not None:
                     self._player.stop()
+            task = asyncio.current_task()
+            if stopped and (task is None or not task.cancelling()):
+                await self._emit_playlist()
 
     async def _prefetch(self) -> None:
         """预取下一首地址。不拿播放锁，失败就等真正轮到时再试。"""

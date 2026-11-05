@@ -76,10 +76,11 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 # 优先安装 WebRTC 软件回声消除（livekit）；该平台没有对应的预编译包时退回 speexdsp
-if ! uv sync --extra aec; then
+# --extra tui：SSH 前台调试时的全屏界面。systemd 没有终端，不画界面，只跑语音
+if ! uv sync --extra aec --extra tui; then
   echo "livekit 安装失败，改用 speexdsp 作为软件回声消除"
   sudo apt-get install -y libspeexdsp-dev
-  uv sync --extra aec-speex
+  uv sync --extra aec-speex --extra tui
 fi
 # uv sync 会重装 sherpa-onnx，放在它后面，避免刚拷好的动态库被清掉
 bash scripts/install_onnxruntime.sh

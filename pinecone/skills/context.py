@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from pinecone.core.events import StateChanged
+from pinecone.core.events import Event, StateChanged
 from pinecone.core.task_manager import OnCancel, RunningTask, TaskKind, TaskTarget
 
 if TYPE_CHECKING:
@@ -112,6 +112,17 @@ class SkillContext:
         )
 
     # ------------------------------------------------------------------ 事件
+
+    async def publish(self, event: Event) -> None:
+        """发布一条事件，供界面或其他模块订阅。
+
+        只能在事件循环线程调用，不要在 PortAudio 回调里调用。
+        可取消：取消会传到订阅者。
+
+        Args:
+            event: 已经发生的事情，例如播放队列变化。
+        """
+        await self._bus.publish(event)
 
     def on_state_change(
         self, callback: Callable[[str, str], Awaitable[None] | None]

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from rich.text import Text
 from textual.widgets import Static
 
 from pinecone.core.state import AssistantState as S
+from pinecone.core.state import StateMachine
+from pinecone.core.task_manager import TaskManager
 
-if TYPE_CHECKING:
-    from pinecone.core.state import StateMachine
-    from pinecone.core.task_manager import TaskManager
-    from pinecone.dialog import DialogController
+
+class StatusView(Protocol):
+    """状态栏要读的那一小块会话表面，不依赖对话控制器。"""
+
+    state: StateMachine
+    tasks: TaskManager
+
+    @property
+    def timer_remaining(self) -> float | None:
+        """聆听或追问还剩几秒，没有在计时时为 None。"""
+        ...
+
 
 _STATES = {
     S.IDLE: ("空闲", "dim"),
@@ -33,28 +43,28 @@ class StatusBar(Static):
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__("启动中……", id=id)
-        self._source: tuple[StateMachine, DialogController, TaskManager] | None = None
+        self._source: StatusView | None = None
 
-    def watch(self, state: StateMachine, dialog: DialogController, tasks: TaskManager) -> None:
+    def watch(self, source: StatusView) -> None:
         """后端启动完成后调用，开始显示。"""
-        self._source = (state, dialog, tasks)
+        self._source = source
         self.refresh_status()
         self.set_interval(_REFRESH_S, self.refresh_status)
 
     def refresh_status(self) -> None:
         if self._source is None:
             return
-        state, dialog, tasks = self._source
-        label, style = _STATES[state.state]
+        source = self._source
+        label, style = _STATES[source.state.state]
         line = Text()
         line.append("● ", style=style)
         line.append(label, style=style)
 
-        remaining = dialog.timer_remaining
-        if remaining is not None and state.state in (S.LISTENING, S.FOLLOW_UP):
+        remaining = source.timer_remaining
+        if remaining is not None and source.state.state in (S.LISTENING, S.FOLLOW_UP):
             line.append(f"  {remaining:.0f}s", style="dim")
 
-        names = [t.name for t in tasks.list() if t.source != "dialog"]
+        names = [t.name for t in source.tasks.list() if t.source != "dialog"]
         if names:
             line.append("   任务：", style="dim")
             line.append("、".join(names))

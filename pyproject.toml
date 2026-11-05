@@ -46,7 +46,7 @@ dependencies = [
 # 如果在某些平台装不上，可以改用 speexdsp（需要系统安装 libspeexdsp-dev）。
 aec = ["livekit>=1.0"]
 aec-speex = ["speexdsp>=0.1.1"]
-# 文本模式（--text）的全屏界面：对话、日志、状态分区显示。树莓派上跑语音模式不需要
+# 全屏界面：对话、日志、状态分区显示。没有终端的服务可以不装，SSH 调试需要
 tui = ["textual>=1.0"]
 dev = [
     "pytest>=8.0",
